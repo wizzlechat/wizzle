@@ -4,8 +4,6 @@ import type { Pairing } from './invite.ts';
 
 const PAIRINGS_KEY = 'wizzle.pairings';
 const ACTIVE_KEY = 'wizzle.active';
-const ONE_PAIRING_KEY = 'wizzle.pairing';
-const ONE_SESSION_KEY = 'wizzle.session';
 
 // Secure store keys take letters, digits, dot, dash and underscore, which covers base64url ids.
 function sessionKey(pairingId: string): string {
@@ -23,14 +21,15 @@ function readJson<T>(key: string, valid: (value: unknown) => value is T): T | nu
   }
 }
 
+// Pairings from before static keys lack them and are dropped, since that bridge has to pair again anyway.
 function isPairing(value: unknown): value is Pairing {
   if (typeof value !== 'object' || value === null) return false;
   const v = value as Record<string, unknown>;
-  return typeof v['relay'] === 'string' && typeof v['pairingId'] === 'string' && typeof v['secret'] === 'string';
+  return ['relay', 'pairingId', 'secret', 'bridgeKey', 'phonePublic', 'phonePrivate'].every((key) => typeof v[key] === 'string');
 }
 
-function isPairingList(value: unknown): value is Pairing[] {
-  return Array.isArray(value) && value.every(isPairing);
+function isArray(value: unknown): value is unknown[] {
+  return Array.isArray(value);
 }
 
 function isSessionState(value: unknown): value is SessionState {
@@ -39,26 +38,8 @@ function isSessionState(value: unknown): value is SessionState {
   return Array.isArray(v['epochs']) && (v['send'] === null || typeof v['send'] === 'string');
 }
 
-let migrated = false;
-
-// The phone used to hold exactly one bridge, so lift that pairing into the list on first read.
-function migrate(): void {
-  if (migrated) return;
-  migrated = true;
-  if (secureStorage.get(PAIRINGS_KEY)) return;
-  const only = readJson(ONE_PAIRING_KEY, isPairing);
-  if (!only) return;
-  savePairings([only]);
-  saveActiveId(only.pairingId);
-  const session = secureStorage.get(ONE_SESSION_KEY);
-  if (session) secureStorage.set(sessionKey(only.pairingId), session);
-  secureStorage.remove(ONE_PAIRING_KEY);
-  secureStorage.remove(ONE_SESSION_KEY);
-}
-
 export function loadPairings(): Pairing[] {
-  migrate();
-  return readJson(PAIRINGS_KEY, isPairingList) ?? [];
+  return (readJson(PAIRINGS_KEY, isArray) ?? []).filter(isPairing);
 }
 
 export function savePairings(pairings: Pairing[]): void {
@@ -66,7 +47,6 @@ export function savePairings(pairings: Pairing[]): void {
 }
 
 export function loadActiveId(): string | null {
-  migrate();
   return secureStorage.get(ACTIVE_KEY);
 }
 

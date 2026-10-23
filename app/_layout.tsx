@@ -2,9 +2,12 @@ import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useRef } from 'react';
 import { AppState, useColorScheme } from 'react-native';
+import { KeyboardProvider } from 'react-native-keyboard-controller';
 import { TamaguiProvider, useTheme } from 'tamagui';
+import { startPush } from '../src/push';
 import { connection } from '../src/relay/connection';
 import '../src/store';
+import { useAppearance } from '../src/ui/appearance';
 import { useAppFonts } from '../src/ui/fonts';
 import { tamaguiConfig } from '../tamagui.config';
 
@@ -12,9 +15,10 @@ import { tamaguiConfig } from '../tamagui.config';
 // and the native header for that frame, so the last real answer is kept instead.
 function useScheme(): 'light' | 'dark' {
   const scheme = useColorScheme();
+  const appearance = useAppearance();
   const last = useRef<'light' | 'dark'>('light');
   if (scheme === 'light' || scheme === 'dark') last.current = scheme;
-  return last.current;
+  return appearance === 'system' ? last.current : appearance;
 }
 
 export default function RootLayout() {
@@ -22,17 +26,28 @@ export default function RootLayout() {
   const fontsReady = useAppFonts();
   useEffect(() => {
     connection.start();
+    const stopPush = startPush();
+    // Background closes the socket so the relay pushes instead of writing to a phone that is gone.
     const sub = AppState.addEventListener('change', (state) => {
-      if (state === 'active') connection.wake();
+      if (state === 'background') connection.suspend();
+      if (state === 'active') {
+        connection.resume();
+        connection.wake();
+      }
     });
-    return () => sub.remove();
+    return () => {
+      sub.remove();
+      stopPush();
+    };
   }, []);
   if (!fontsReady) return null;
   return (
-    <TamaguiProvider config={tamaguiConfig} defaultTheme={scheme}>
-      <StatusBar style="auto" />
-      <RootStack />
-    </TamaguiProvider>
+    <KeyboardProvider>
+      <TamaguiProvider config={tamaguiConfig} defaultTheme={scheme}>
+        <StatusBar style={scheme === 'dark' ? 'light' : 'dark'} />
+        <RootStack />
+      </TamaguiProvider>
+    </KeyboardProvider>
   );
 }
 
@@ -47,6 +62,9 @@ function RootStack() {
         headerBackButtonDisplayMode: 'minimal',
         contentStyle: { backgroundColor: theme.background.val },
       }}
-    />
+    >
+      {/* An element opens over whatever linked to it. */}
+      <Stack.Screen name="element" options={{ presentation: 'modal' }} />
+    </Stack>
   );
 }

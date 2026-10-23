@@ -8,7 +8,13 @@
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.wizzleai.ios",
+      "buildNumber": "1.0.5",
+      "appleTeamId": "L96WZ5P5WD",
+      "config": {
+        "usesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -29,7 +35,16 @@
         {
           "cameraPermission": "wizzle scans the pairing code shown by your bridge."
         }
-      ]
+      ],
+      "expo-notifications",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "wizzle attaches the photos you pick to a message for your agent.",
+          "cameraPermission": "wizzle scans the pairing code shown by your bridge."
+        }
+      ],
+      "expo-sharing"
     ]
   }
 }

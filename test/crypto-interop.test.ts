@@ -6,7 +6,7 @@ import { nodeCrypto } from '../src/protocol/crypto-node.ts';
 import { NONCE_BYTES, TAG_BYTES } from '../src/protocol/crypto.ts';
 import { FRAME_HEADER_BYTES, MAX_FILE_BYTES, decodeFrame } from '../src/protocol/envelope.ts';
 import { decodePacket, encodePacket } from '../src/protocol/messages.ts';
-import { derivePsk, deriveRelaySecret } from '../src/protocol/pairing.ts';
+import { derivePairedRelaySecret, derivePsk, deriveRelaySecret } from '../src/protocol/pairing.ts';
 import { Session } from '../src/protocol/session.ts';
 
 // Same shape as the app binding, with Node's CSPRNG in place of expo-crypto.
@@ -82,8 +82,10 @@ test('aead frames open across providers and reject tampering', () => {
 test('phone session on noble talks to a bridge session on node', () => {
   const pairingId = nodeCrypto.randomBytes(16);
   const psk = nodeCrypto.randomBytes(32);
-  const phone = new Session(phoneCrypto, 'phone', pairingId, psk);
-  const bridge = new Session(nodeCrypto, 'bridge', pairingId, psk);
+  const phoneKeys = phoneCrypto.x25519KeyPair();
+  const bridgeKeys = nodeCrypto.x25519KeyPair();
+  const phone = new Session(phoneCrypto, 'phone', pairingId, { psk, own: phoneKeys, peer: bridgeKeys.publicKey });
+  const bridge = new Session(nodeCrypto, 'bridge', pairingId, { psk, own: bridgeKeys, peer: null });
 
   const hs1 = decodeFrame(phone.beginHandshake());
   const hs2 = decodeFrame(bridge.handleHandshake(hs1) as Uint8Array);
@@ -94,6 +96,9 @@ test('phone session on noble talks to a bridge session on node', () => {
   assert.equal(phone.open(decodeFrame(reply)).kind, 'confirm');
   assert.ok(phone.ready && bridge.ready);
   assert.ok(equal(phone.currentEpochId as Uint8Array, bridge.currentEpochId as Uint8Array));
+  assert.ok(equal(bridge.peerKey as Uint8Array, phoneKeys.publicKey));
+  const pairedOnPhone = derivePairedRelaySecret(phoneCrypto, pairingId, phoneKeys.privateKey, bridgeKeys.publicKey);
+  assert.ok(equal(pairedOnPhone, derivePairedRelaySecret(nodeCrypto, pairingId, bridgeKeys.privateKey, phoneKeys.publicKey)));
 
   const sync = phone.seal(encodePacket({ id: 'p1', t: 'sync' }));
   const atBridge = decodePacket(plaintextOf(bridge.open(decodeFrame(sync))));
@@ -110,7 +115,7 @@ test('phone session on noble talks to a bridge session on node', () => {
   assert.equal(uploadAtBridge.header.t, 'upload');
   assert.ok(equal(uploadAtBridge.body, body));
 
-  const restored = new Session(phoneCrypto, 'phone', pairingId, psk, JSON.parse(JSON.stringify(phone.exportState())));
+  const restored = new Session(phoneCrypto, 'phone', pairingId, { psk, own: phoneKeys, peer: bridgeKeys.publicKey }, JSON.parse(JSON.stringify(phone.exportState())));
   assert.ok(restored.ready);
   assert.equal(bridge.open(decodeFrame(restored.seal(encodePacket({ id: 'p3', t: 'sync' })))).kind, 'data');
 });

@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { Animated } from 'react-native';
 import { Spinner, Text, XStack, YStack, useTheme } from 'tamagui';
-import type { Activity } from '../protocol/index.ts';
+import type { Activity, AgentStatus } from '../protocol/index.ts';
 import type { Phase } from '../relay/connection.ts';
 
 type PhaseStatus = { label: string; banner: string; color: string; busy: boolean };
@@ -14,6 +14,21 @@ export const PHASE: Record<Phase, PhaseStatus> = {
   connected: { label: 'Connected', banner: 'Connected', color: '#34C759', busy: false },
   failed: { label: 'Rejected by relay', banner: 'The relay rejected this pairing', color: '#FF3B30', busy: false },
 };
+
+const AGENT_COLOR: Record<AgentStatus, string> = {
+  idle: '#8E8E93',
+  running: '#34C759',
+  waiting: '#FF9F0A',
+  offline: '#8E8E93',
+  error: '#FF3B30',
+  paused: '#636366',
+};
+
+// A status from a newer bridge than this app knows still gets a dot.
+const NEUTRAL = '#8E8E93';
+
+// The two phases every reconnect passes through; they show as a bare dot beside the bridge name.
+const PASSING: Partial<Record<Phase, string>> = { connecting: '#0A84FF', handshake: '#FF9F0A' };
 
 const PULSE_MS = 900;
 
@@ -48,15 +63,24 @@ export function ThinkingDot({ size = 8 }: { size?: number }) {
   );
 }
 
+export function AgentDot({ status, size = 8 }: { status: AgentStatus; size?: number }) {
+  return <Dot color={AGENT_COLOR[status] ?? NEUTRAL} size={size} />;
+}
+
 export function StatusDot({ phase, size = 10 }: { phase: Phase; size?: number }) {
   const status = PHASE[phase];
   if (status.busy) return <Spinner size="small" color={status.color} />;
   return <Dot color={status.color} size={size} />;
 }
 
-// Only on screen while something is wrong, so a healthy connection stays silent.
+// Transparent once connected, so the slot it holds keeps the bridge name from moving.
+export function PhaseDot({ phase, size = 8 }: { phase: Phase; size?: number }) {
+  return <Dot color={PASSING[phase] ?? 'transparent'} size={size} />;
+}
+
+// Only on screen while something is wrong; connecting and securing are the dot beside the bridge name.
 export function ConnectionBanner({ phase, error }: { phase: Phase; error: string | null }) {
-  if (phase === 'connected') return null;
+  if (phase === 'connected' || PASSING[phase]) return null;
   return (
     <XStack items="center" gap="$2" px="$4" py="$2" bg="$color3">
       <StatusDot phase={phase} size={8} />
@@ -73,15 +97,4 @@ export function activityLabel(activity: Activity): string {
   if (activity.state === 'tool') return activity.tool ? `Running ${activity.tool}` : 'Working';
   if (activity.state === 'thinking') return 'Thinking';
   return 'Idle';
-}
-
-export function ActivityRow({ activity }: { activity: Activity }) {
-  return (
-    <XStack items="center" gap="$2" px="$4" py="$2">
-      <Spinner size="small" color="$blue10" />
-      <Text fontSize="$2" color="$blue10" numberOfLines={1}>
-        {activityLabel(activity)}
-      </Text>
-    </XStack>
-  );
 }

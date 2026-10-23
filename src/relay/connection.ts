@@ -13,6 +13,7 @@ import {
 import {
   Session,
   decodePacket,
+  derivePairedRelaySecret,
   derivePsk,
   deriveRelaySecret,
   encodePacket,
@@ -50,6 +51,8 @@ class Connection {
   private pairings: Pairing[] = [];
   private activeId: string | null = null;
   private client: RelayClient | null = null;
+  private suspended = false;
+  private pushToken: string | null = null;
   private bridge: BridgeHello | null = null;
   private error: string | null = null;
   private snapshot: ConnectionSnapshot | null = null;
@@ -82,10 +85,29 @@ class Connection {
     this.client?.wake();
   }
 
+  // In the background the socket closes so the relay sees the phone offline and pushes instead of forwarding.
+  suspend(): void {
+    if (!this.client || this.client.state === 'stopped') return;
+    this.suspended = true;
+    this.client.stop();
+  }
+
+  resume(): void {
+    if (!this.suspended) return;
+    this.suspended = false;
+    this.client?.start();
+  }
+
+  // The APNs token is kept for every client opened later; the client sends it after each welcome.
+  setPushToken(token: string | null): void {
+    this.pushToken = token;
+    this.client?.setPushToken(token);
+  }
+
   // Throws with the protocol's message when the text is not a valid invite.
   pair(text: string, name?: string): Pairing {
     this.load();
-    const pairing = parsePairing(text);
+    const pairing = parsePairing(text, phoneCrypto);
     const label = name?.trim();
     if (label) pairing.name = label;
     this.stop();
@@ -101,11 +123,12 @@ class Connection {
   }
 
   // Switching drops the socket for the old bridge; the store resets itself on the new pairing id.
-  select(pairingId: string): void {
+  // Returns false for the active or an unknown pairing, which a push tap for it leaves alone.
+  select(pairingId: string): boolean {
     this.load();
-    if (pairingId === this.activeId) return;
+    if (pairingId === this.activeId) return false;
     const pairing = this.pairings.find((one) => one.pairingId === pairingId);
-    if (!pairing) return;
+    if (!pairing) return false;
     this.stop();
     this.activeId = pairingId;
     this.bridge = null;
@@ -113,6 +136,7 @@ class Connection {
     this.persist();
     this.open(pairing);
     this.changed();
+    return true;
   }
 
   // The invite's name is whatever the bridge calls itself, so the phone keeps its own label for it.
@@ -137,7 +161,10 @@ class Connection {
     const id = pairingId ?? this.activeId;
     if (!id) return;
     const wasActive = id === this.activeId;
-    if (wasActive) this.stop();
+    if (wasActive) {
+      this.client?.revoke();
+      this.client = null;
+    }
     clearSessionState(id);
     this.pairings = this.pairings.filter((one) => one.pairingId !== id);
     if (wasActive) {
@@ -179,37 +206,55 @@ class Connection {
   private stop(): void {
     this.client?.stop();
     this.client = null;
+    this.suspended = false;
+  }
+
+  // Marks the bridge as having pinned this phone, after which the relay knows it by the paired secret.
+  private confirm(pairingId: string): void {
+    if (this.pairings.find((one) => one.pairingId === pairingId)?.confirmed) return;
+    this.pairings = this.pairings.map((one) => (one.pairingId === pairingId ? { ...one, confirmed: true } : one));
+    this.persist();
   }
 
   private open(pairing: Pairing): void {
     const secret = fromB64Url(pairing.secret);
     const pairingId = fromB64Url(pairing.pairingId);
-    const psk = derivePsk(phoneCrypto, secret);
+    const own = { publicKey: fromB64Url(pairing.phonePublic), privateKey: fromB64Url(pairing.phonePrivate) };
+    const bridgeKey = fromB64Url(pairing.bridgeKey);
+    const keys = { psk: derivePsk(phoneCrypto, secret), own, peer: bridgeKey };
     let session: Session;
     try {
-      session = new Session(phoneCrypto, 'phone', pairingId, psk, loadSessionState(pairing.pairingId) ?? undefined);
+      session = new Session(phoneCrypto, 'phone', pairingId, keys, loadSessionState(pairing.pairingId) ?? undefined);
     } catch {
       log.warn('wizzle: stored session state unusable, starting fresh');
       clearSessionState(pairing.pairingId);
-      session = new Session(phoneCrypto, 'phone', pairingId, psk);
+      session = new Session(phoneCrypto, 'phone', pairingId, keys);
     }
+    const invite = deriveRelaySecret(phoneCrypto, secret);
+    const paired = derivePairedRelaySecret(phoneCrypto, pairingId, own.privateKey, bridgeKey);
+    const confirmed = () => this.pairings.find((one) => one.pairingId === pairing.pairingId)?.confirmed === true;
     const client = new RelayClient({
       transport: webSocketTransport,
       relayUrl: pairing.relay,
       pairingId,
-      relaySecret: deriveRelaySecret(phoneCrypto, secret),
+      relaySecrets: () => (confirmed() ? [paired, invite] : [invite, paired]),
       session,
       persist: (state) => saveSessionState(pairing.pairingId, state),
       log,
       onPacket: (plaintext) => this.receive(plaintext),
       onChange: () => this.changed(),
-      onSession: () => void this.send({ t: 'sync' }),
+      onSession: () => {
+        this.confirm(pairing.pairingId);
+        void this.send({ t: 'sync' });
+      },
       onFatal: (code, message) => {
         this.error = `${code}: ${message}`;
         this.changed();
       },
     });
     this.client = client;
+    this.suspended = false;
+    client.setPushToken(this.pushToken);
     client.start();
   }
 

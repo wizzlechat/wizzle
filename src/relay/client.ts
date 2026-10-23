@@ -20,11 +20,12 @@ export type Logger = {
   error(msg: string, data?: Record<string, unknown>): void;
 };
 
+// relaySecrets lists the invite and the paired secret, the one the relay most likely holds first.
 export type RelayClientOptions = {
   transport: Transport;
   relayUrl: string;
   pairingId: Uint8Array;
-  relaySecret: Uint8Array;
+  relaySecrets(): Uint8Array[];
   session: Session;
   persist(state: SessionState): void;
   log: Logger;
@@ -50,6 +51,9 @@ export class RelayClient {
   private attempts = 0;
   private outbox: Pending[] = [];
   private outboxBytes = 0;
+  private secretIndex = 0;
+  private authRetry = false;
+  private pushToken: string | null = null;
   state: RelayClientState = 'stopped';
   peerOnline = false;
   handshaking = false;
@@ -71,6 +75,13 @@ export class RelayClient {
     this.connect();
   }
 
+  // Tells the relay to forget the pairing, which also cuts off the bridge, then stops.
+  revoke(): void {
+    if (this.state === 'ready') this.conn?.sendText(encodeControl({ t: 'revoke' }));
+    this.stop();
+  }
+
+  // Closes the socket and stops reconnecting; session and outbox stay, so start() resumes where it left off.
   stop(): void {
     this.state = 'stopped';
     this.peerOnline = false;
@@ -81,6 +92,17 @@ export class RelayClient {
     this.conn = null;
     conn?.close();
     this.opts.onChange?.();
+  }
+
+  // The relay keeps the token per pairing; it goes out at once when attached and after every welcome.
+  setPushToken(token: string | null): void {
+    if (token === this.pushToken) return;
+    this.pushToken = token;
+    if (this.state === 'ready') this.sendPushToken();
+  }
+
+  private sendPushToken(): void {
+    if (this.pushToken) this.conn?.sendText(encodeControl({ t: 'push', platform: 'ios', token: this.pushToken }));
   }
 
   // Skips the rest of a backoff wait, for when the app returns to the foreground.
@@ -120,6 +142,8 @@ export class RelayClient {
     this.state = 'connecting';
     this.peerOnline = false;
     this.opts.onChange?.();
+    const secrets = this.opts.relaySecrets();
+    const secret = secrets[Math.min(this.secretIndex, secrets.length - 1)] as Uint8Array;
     let conn: TransportConn | null = null;
     conn = this.opts.transport.connect(this.opts.relayUrl, {
       onOpen: () => {
@@ -131,7 +155,7 @@ export class RelayClient {
             v: RELAY_PROTOCOL_VERSION,
             pairing: toB64Url(this.opts.pairingId),
             role: 'phone',
-            secret: toB64Url(this.opts.relaySecret),
+            secret: toB64Url(secret),
           }),
         );
         this.opts.onChange?.();
@@ -148,6 +172,12 @@ export class RelayClient {
         this.peerOnline = false;
         this.handshaking = false;
         if (this.state === 'stopped') return;
+        if (this.authRetry) {
+          this.authRetry = false;
+          this.connect();
+          return;
+        }
+        this.secretIndex = 0;
         this.opts.log.warn('wizzle: relay connection closed', { code, reason });
         this.scheduleReconnect();
       },
@@ -166,6 +196,10 @@ export class RelayClient {
       this.timer = null;
       if (this.state !== 'stopped') this.connect();
     }, delay);
+  }
+
+  private resendOutbox(): void {
+    for (const pending of this.outbox) this.conn?.sendBinary(pending.bytes);
   }
 
   // A fresh epoch every time both sides are online is the forward secrecy boundary.
@@ -189,17 +223,27 @@ export class RelayClient {
         this.attempts = 0;
         this.peerOnline = msg.peer;
         this.opts.log.info('wizzle: relay ready', { peer: msg.peer, buffered: msg.buffered });
-        for (const pending of this.outbox) this.conn?.sendBinary(pending.bytes);
+        this.sendPushToken();
+        this.resendOutbox();
         if (msg.peer) this.beginHandshake();
         this.opts.onChange?.();
         return;
       case 'peer':
         this.peerOnline = msg.online;
-        if (msg.online) this.beginHandshake();
-        else this.handshaking = false;
+        // The bridge drops seqs it already accepted, so resending covers frames lost on its dead socket.
+        if (msg.online) {
+          this.resendOutbox();
+          this.beginHandshake();
+        } else this.handshaking = false;
         this.opts.onChange?.();
         return;
       case 'error':
+        if (msg.code === 'auth' && this.secretIndex + 1 < this.opts.relaySecrets().length) {
+          this.secretIndex += 1;
+          this.authRetry = true;
+          this.opts.log.info('wizzle: relay refused one pairing secret, trying the other');
+          return;
+        }
         this.opts.log.error('wizzle: relay error', { code: msg.code, message: msg.message });
         if (msg.code === 'auth' || msg.code === 'revoked') {
           this.stop();

@@ -2,9 +2,11 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useRef, useState } from 'react';
 import { Platform } from 'react-native';
-import { Button, H2, Input, Paragraph, Text, TextArea, XStack, YStack } from 'tamagui';
+import { H2, Paragraph, XStack, YStack } from 'tamagui';
 import { inviteError, inviteFromParams } from '../src/pairing/invite';
 import { connection, useConnection } from '../src/relay/connection';
+import { Field, Pill } from '../src/ui/controls';
+import { SectionTitle } from '../src/ui/list';
 
 const canScan = Platform.OS !== 'web';
 
@@ -67,7 +69,7 @@ export default function Pair() {
         ) : null}
 
         {scanning ? (
-          <YStack height={320} rounded="$4" overflow="hidden" bg="$color3">
+          <YStack height={320} rounded="$8" overflow="hidden" bg="$color3">
             <CameraView
               style={{ flex: 1 }}
               facing="back"
@@ -78,8 +80,8 @@ export default function Pair() {
         ) : null}
 
         <YStack gap="$2">
-          <Text fontWeight="600">Name</Text>
-          <Input
+          <SectionTitle>Name</SectionTitle>
+          <Field
             value={name}
             onChangeText={setName}
             placeholder="Work"
@@ -90,8 +92,11 @@ export default function Pair() {
         </YStack>
 
         <YStack gap="$2">
-          <Text fontWeight="600">Invite</Text>
-          <TextArea
+          <SectionTitle>Invite</SectionTitle>
+          <Field
+            multiline
+            minH={110}
+            textAlignVertical="top"
             value={text}
             onChangeText={(value) => {
               setText(value);
@@ -100,20 +105,19 @@ export default function Pair() {
             placeholder="wizzle://pair?r=..."
             autoCapitalize="none"
             autoCorrect={false}
-            style={{ minHeight: 110 }}
           />
         </YStack>
         {error ? <Paragraph color="$red10">{error}</Paragraph> : null}
 
         <XStack gap="$3">
           {canScan ? (
-            <Button flex={1} onPress={() => (scanning ? setScanning(false) : void startScan())}>
+            <Pill flex={1} onPress={() => (scanning ? setScanning(false) : void startScan())}>
               {scanning ? 'Stop scanning' : 'Scan QR code'}
-            </Button>
+            </Pill>
           ) : null}
-          <Button flex={1} theme="accent" disabled={!ready} onPress={pair}>
+          <Pill flex={1} kind="primary" disabled={!ready} onPress={pair}>
             Pair
-          </Button>
+          </Pill>
         </XStack>
       </YStack>
     </>
