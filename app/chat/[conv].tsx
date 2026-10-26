@@ -1,5 +1,6 @@
+import { setStringAsync } from 'expo-clipboard';
 import { GlassView, isGlassEffectAPIAvailable } from 'expo-glass-effect';
-import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { Stack, useIsFocused, useLocalSearchParams, useRouter } from 'expo-router';
 import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FlatList, StyleSheet, type ScrollViewProps } from 'react-native';
 import { KeyboardChatScrollView, KeyboardGestureArea } from 'react-native-keyboard-controller';
@@ -12,34 +13,41 @@ import { useConnection } from '../../src/relay/connection';
 import { MAX_ATTACHMENTS, SYSTEM_CONV, attachmentFailure, store, useConversation, useStore } from '../../src/store';
 import type { Attachment, ChatEntry, ConversationRow, Notice, OpenApproval, OpenQuestion } from '../../src/store/types';
 import { FileView } from '../../src/ui/attachments';
-import { ArrowUp, Cards, ChatPlus, Close, Dots, File, Mic, Pencil, Photo, Plus, Trash } from '../../src/ui/icons';
+import { faceColor } from '../../src/ui/face';
+import { ArrowUp, Cards, ChatPlus, Check, Close, Copy, Dots, File, Mic, Pencil, Photo, Plus, Speaker, Stop, Trash } from '../../src/ui/icons';
+import { useDictation } from '../../src/ui/dictation';
 import { KeyboardRider } from '../../src/ui/keyboard';
 import { ListRow } from '../../src/ui/list';
 import { Markdown } from '../../src/ui/markdown';
+import { MessageMore } from '../../src/ui/message-more';
 import { AgentMenuItems, AgentPrompts, ResumeButton, canManage, type AgentPrompt } from '../../src/ui/agent-actions';
 import { ConnectionBanner } from '../../src/ui/status';
 import { ThinkingRow } from '../../src/ui/thinking';
 import { ElementLink } from '../../src/ui/element';
-import { DeleteTopic, Menu, RenameTopic, TitlePrompt } from '../../src/ui/topics';
+import { ClearChat, DeleteTopic, Menu, RenameTopic, TitlePrompt } from '../../src/ui/topics';
 import { fileSize, shortTime } from '../../src/ui/time';
 
 const DECISION: Record<ApprovalDecision, string> = { allow: 'Allow', deny: 'Deny', allow_always: 'Always allow' };
-
-const COMPOSER_ID = 'composer';
 
 // iOS 26 and later draw the input bar in Liquid Glass; elsewhere it stays a solid pill.
 const GLASS = isGlassEffectAPIAvailable();
 const BAR_RADIUS = 26;
 const RIDER = { position: 'absolute', left: 0, right: 0, bottom: 0 } as const;
 
+// A hold this long lights an agent message; a scroll that starts on one ends sooner.
+const HOLD_MS = 150;
+// How long the copy button shows its check.
+const COPIED_MS = 1500;
 // How long a freshly created agent may stay silent before the chat says its container may not have started.
 const STALL_MS = 5 * 60_000;
 
-type Prompt = 'menu' | 'new' | 'rename' | 'delete' | 'attach' | { agent: AgentPrompt } | null;
+type Prompt = 'menu' | 'new' | 'rename' | 'delete' | 'clear' | 'attach' | { agent: AgentPrompt } | null;
 
 export default function Chat() {
   const params = useLocalSearchParams<{ conv: string }>();
   const conv = decodeId(params.conv);
+  // One id per chat: a chat closing on top of another drops only its own keyboard registration.
+  const composerId = `composer:${conv}`;
   const conn = useConnection();
   const router = useRouter();
   const snapshot = useStore();
@@ -54,6 +62,7 @@ export default function Chat() {
   const [hushed, setHushed] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
+  const dictation = useDictation(draft, setDraft);
   const [attaching, setAttaching] = useState(false);
   const [composerHeight, setComposerHeight] = useState(0);
   const unsent = useRef<Attachment[]>([]);
@@ -63,8 +72,10 @@ export default function Chat() {
 
   const row = snapshot.conversations.find((item) => item.id === conv);
   const agentName = row?.agent?.name ?? row?.title ?? 'agent';
+  const seed = row?.agentId ?? conv;
   const readOnly = conv === SYSTEM_CONV;
   const canTopic = snapshot.capabilities?.topics === true && !readOnly && row !== undefined;
+  const canClear = snapshot.capabilities?.clearSession === true && !readOnly && row !== undefined;
   const agent = row?.agent ?? null;
   const canAgent = !readOnly && canManage(agent, snapshot.capabilities);
   const canAttach = snapshot.capabilities?.files === true && !readOnly;
@@ -84,6 +95,12 @@ export default function Chat() {
     store.open(conv);
   }, [conv, conn.phase]);
 
+  // Whatever lands while this chat is the screen in front is read as it arrives.
+  const focused = useIsFocused();
+  useEffect(() => {
+    if (focused) store.markRead(conv);
+  }, [conv, focused, state.messages]);
+
   useEffect(() => {
     if (!gone) return;
     if (router.canGoBack()) router.back();
@@ -94,6 +111,7 @@ export default function Chat() {
 
   function submit(): void {
     if (!store.send(conv, draft, attachments)) return;
+    dictation.cancel();
     setDraft('');
     unsent.current = [];
     setAttachments([]);
@@ -138,28 +156,30 @@ export default function Chat() {
     setAttachError(null);
   }
 
+  const menuButton = (
+    <Button
+      size="$3"
+      circular
+      chromeless
+      scaleIcon={1.3}
+      aria-label="Conversation menu"
+      icon={<Dots />}
+      onPress={() => setPrompt('menu')}
+    />
+  );
+
   return (
     <>
       <Stack.Screen
         options={{
           title,
           ...(row && !readOnly && {
-            headerRight: () => (
-              <Button
-                size="$3"
-                circular
-                chromeless
-                scaleIcon={1.3}
-                aria-label="Conversation menu"
-                icon={<Dots />}
-                onPress={() => setPrompt('menu')}
-              />
-            ),
+            headerRight: () => menuButton,
           }),
         }}
       />
       {/* A drag down the list starts taking the keyboard once the finger reaches the input bar. */}
-      <KeyboardGestureArea style={{ flex: 1 }} textInputNativeID={COMPOSER_ID} offset={composerHeight}>
+      <KeyboardGestureArea style={{ flex: 1 }} textInputNativeID={composerId} offset={composerHeight}>
         <YStack flex={1}>
           <ConnectionBanner phase={conn.phase} error={conn.error} />
           {state.notices.map((notice) => (
@@ -196,7 +216,9 @@ export default function Chat() {
             onEndReached={() => store.loadOlder(conv)}
             ListFooterComponent={state.loading ? <Spinner size="small" py="$3" /> : null}
             ListEmptyComponent={<Empty loading={state.loading} readOnly={readOnly} />}
-            renderItem={({ item }) => <Entry entry={item} agentName={agentName} conv={conv} agent={agent} />}
+            renderItem={({ item }) => (
+              <Entry entry={item} agentName={agentName} seed={seed} conv={conv} agent={agent} />
+            )}
           />
           {/* Cards, activity and the input bar ride the keyboard by transform, so they track it frame for frame.
               They float over the list, which scrolls on underneath the input bar. */}
@@ -213,7 +235,7 @@ export default function Chat() {
             {state.approvals.map((open) => (
               <ApprovalCard key={open.approval.approvalId} open={open} conv={conv} />
             ))}
-            <ThinkingRow activity={state.activity} seed={row?.agentId ?? conv} />
+            <ThinkingRow activity={state.activity} seed={seed} />
             {readOnly ? (
               <XStack px="$4" py="$3" bg="$background" borderTopWidth={1} borderColor="$borderColor">
                 <Text fontSize="$2" color="$color11">
@@ -235,6 +257,16 @@ export default function Chat() {
                       {attachError}
                     </Text>
                     <Button size="$1" chromeless onPress={() => setAttachError(null)}>
+                      Dismiss
+                    </Button>
+                  </XStack>
+                ) : null}
+                {dictation.error ? (
+                  <XStack items="center" gap="$2" px="$2">
+                    <Text flex={1} fontSize="$2" color="$red10">
+                      {dictation.error}
+                    </Text>
+                    <Button size="$1" chromeless onPress={dictation.dismiss}>
                       Dismiss
                     </Button>
                   </XStack>
@@ -266,9 +298,13 @@ export default function Chat() {
                     color="$color"
                     placeholderTextColor="$color10"
                     value={draft}
-                    onChangeText={setDraft}
+                    onChangeText={(next) => {
+                      // A typed edit takes over from the mic, so nothing heard later overwrites it.
+                      dictation.cancel();
+                      setDraft(next);
+                    }}
                     placeholder="Ask anything"
-                    nativeID={COMPOSER_ID}
+                    nativeID={composerId}
                     onSubmitEditing={submit}
                     submitBehavior="submit"
                   />
@@ -283,8 +319,19 @@ export default function Chat() {
                       </BarButton>
                     ) : null}
                     <YStack flex={1} />
-                    <BarButton label="Voice input">
-                      <Mic size={20} />
+                    <BarButton
+                      label={dictation.state === 'idle' ? 'Dictate' : 'Stop dictation'}
+                      active={dictation.state === 'listening'}
+                      wide={dictation.state !== 'idle'}
+                      onPress={dictation.toggle}
+                    >
+                      {dictation.state === 'starting' ? (
+                        <Spinner size="small" />
+                      ) : dictation.state === 'listening' ? (
+                        <Stop size={18} color="white" />
+                      ) : (
+                        <Mic size={20} />
+                      )}
                     </BarButton>
                     <BarButton
                       label="Send"
@@ -302,7 +349,14 @@ export default function Chat() {
             <YStack height={insets.bottom} bg={composing ? undefined : '$background'} />
           </KeyboardRider>
           {row && prompt && prompt !== 'attach' ? (
-            <TopicPrompts row={row} prompt={prompt} setPrompt={setPrompt} canTopic={canTopic} capabilities={canAgent ? snapshot.capabilities : null} />
+            <TopicPrompts
+              row={row}
+              prompt={prompt}
+              setPrompt={setPrompt}
+              canTopic={canTopic}
+              canClear={canClear}
+              capabilities={canAgent ? snapshot.capabilities : null}
+            />
           ) : null}
           {prompt === 'attach' ? (
             <Menu title="Attach" onClose={() => setPrompt(null)}>
@@ -345,12 +399,14 @@ function TopicPrompts({
   prompt,
   setPrompt,
   canTopic,
+  canClear,
   capabilities,
 }: {
   row: ConversationRow;
   prompt: Prompt;
   setPrompt: (next: Prompt) => void;
   canTopic: boolean;
+  canClear: boolean;
   capabilities: Capabilities | null;
 }) {
   const router = useRouter();
@@ -371,6 +427,7 @@ function TopicPrompts({
         />
         {canTopic ? <ListRow icon={ChatPlus} label="New topic" onPress={() => setPrompt('new')} /> : null}
         {canTopic && row.topic ? <ListRow icon={Pencil} label="Rename topic" onPress={() => setPrompt('rename')} /> : null}
+        {canClear ? <ListRow icon={Trash} label="Clear chat" danger onPress={() => setPrompt('clear')} /> : null}
         {canTopic && row.topic ? (
           <ListRow icon={Trash} label="Delete topic" danger onPress={() => setPrompt('delete')} />
         ) : null}
@@ -380,6 +437,10 @@ function TopicPrompts({
             capabilities={capabilities}
             onPick={(next) => setPrompt({ agent: next })}
             onResumed={() => setPrompt(null)}
+            onKeys={() => {
+              setPrompt(null);
+              router.push(`/agent-keys?agent=${encodeURIComponent(row.agentId)}`);
+            }}
           />
         ) : null}
       </Menu>
@@ -402,6 +463,7 @@ function TopicPrompts({
   }
   if (prompt === 'rename') return <RenameTopic row={row} onClose={() => setPrompt(null)} />;
   if (prompt === 'delete') return <DeleteTopic row={row} onClose={() => setPrompt(null)} />;
+  if (prompt === 'clear') return <ClearChat row={row} onClose={() => setPrompt(null)} />;
   return null;
 }
 
@@ -415,9 +477,37 @@ function decodeId(raw: string | undefined): string {
 }
 
 // Your own messages sit on the right in a bubble with the time under it; the rest keep a name and time above.
-function Entry({ entry, agentName, conv, agent }: { entry: ChatEntry; agentName: string; conv: string; agent: Agent | null }) {
+function Entry({
+  entry,
+  agentName,
+  seed,
+  conv,
+  agent,
+}: {
+  entry: ChatEntry;
+  agentName: string;
+  seed: string;
+  conv: string;
+  agent: Agent | null;
+}) {
   const failure = entry.local?.failure;
   const mine = entry.role === 'user';
+  const copyable = entry.role === 'agent' && entry.kind === 'text' && entry.text.length > 0;
+  const [holding, setHolding] = useState(false);
+  const holdTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(holdTimer.current), []);
+  // iOS's own Copy answers a long press on the text; this only shows the hold registered.
+  const hold = copyable
+    ? {
+        onPressIn: () => {
+          holdTimer.current = setTimeout(() => setHolding(true), HOLD_MS);
+        },
+        onPressOut: () => {
+          clearTimeout(holdTimer.current);
+          setHolding(false);
+        },
+      }
+    : {};
   const stamp = (
     <>
       <Text fontSize="$1" color="$color10">
@@ -431,7 +521,15 @@ function Entry({ entry, agentName, conv, agent }: { entry: ChatEntry; agentName:
     </>
   );
   return (
-    <YStack px="$4" py="$2" gap="$1" opacity={failure ? 0.6 : 1} items={mine ? 'flex-end' : undefined}>
+    <YStack
+      px="$4"
+      py="$3"
+      gap="$1"
+      opacity={failure ? 0.6 : 1}
+      items={mine ? 'flex-end' : undefined}
+      bg={holding ? '$color3' : undefined}
+      {...hold}
+    >
       {mine ? (
         <YStack maxW="80%" px="$4" py="$3" rounded="$8" bg="$color4">
           <Body entry={entry} />
@@ -439,12 +537,18 @@ function Entry({ entry, agentName, conv, agent }: { entry: ChatEntry; agentName:
       ) : (
         <>
           <XStack items="center" gap="$2">
-            <Text fontSize="$1" fontWeight="700" color="$color11">
+            <Text
+              fontSize="$1"
+              fontWeight="700"
+              color={entry.role === 'system' ? '$color11' : undefined}
+              style={entry.role === 'system' ? undefined : { color: faceColor(seed) }}
+            >
               {entry.role === 'system' ? 'system' : agentName}
             </Text>
             {stamp}
           </XStack>
           <Body entry={entry} />
+          {copyable ? <MessageActions text={entry.text} /> : null}
         </>
       )}
       {mine ? (
@@ -486,16 +590,52 @@ function Entry({ entry, agentName, conv, agent }: { entry: ChatEntry; agentName:
   );
 }
 
+// Copy takes the message as the agent wrote it, markdown included; the speaker waits for read aloud.
+function MessageActions({ text }: { text: string }) {
+  const theme = useTheme();
+  const ink = theme.color10.val;
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), COPIED_MS);
+    return () => clearTimeout(timer);
+  }, [copied]);
+  return (
+    <XStack items="center" gap="$3" pt={10}>
+      <XStack
+        role="button"
+        aria-label="Copy"
+        hitSlop={8}
+        pressStyle={{ opacity: 0.5 }}
+        onPress={() => {
+          void setStringAsync(text);
+          setCopied(true);
+        }}
+      >
+        {copied ? <Check size={18} color={ink} /> : <Copy size={18} color={ink} />}
+      </XStack>
+      <XStack aria-label="Read aloud" hitSlop={8}>
+        <Speaker size={18} color={ink} />
+      </XStack>
+      <MessageMore text={text} color={ink} />
+    </XStack>
+  );
+}
+
 // The bar's round buttons; send is the same shape a little wider, in the text color so it stands out.
 function BarButton({
   label,
   send,
+  active,
+  wide,
   disabled,
   onPress,
   children,
 }: {
   label: string;
   send?: boolean;
+  active?: boolean;
+  wide?: boolean;
   disabled?: boolean;
   onPress?: () => void;
   children: React.ReactNode;
@@ -503,12 +643,14 @@ function BarButton({
   const live = onPress !== undefined && !disabled;
   return (
     <YStack
-      width={send ? 52 : 36}
+      width={send || wide ? 52 : 36}
+      transition="quick"
+      animateOnly={['width', 'backgroundColor']}
       height={36}
       rounded={18}
       items="center"
       justify="center"
-      bg={send ? '$color12' : GLASS ? '$color01' : '$color5'}
+      bg={active ? '$red10' : send ? '$color12' : GLASS ? '$color01' : '$color5'}
       opacity={disabled ? 0.4 : 1}
       role="button"
       aria-label={label}

@@ -8,7 +8,10 @@ export type CachedMeta = { hello: BridgeHello | null; agents: Agent[]; catalog: 
 
 export type CachedConversation = { messages: ChatEntry[]; questions: OpenQuestion[]; approvals: OpenApproval[] };
 
-export type CachedPairing = CachedMeta & { conversations: Map<string, CachedConversation>; elements: StoredElement[] };
+// The newest agent message time read per conversation; floor stands for any conversation without one.
+export type ReadMarks = { floor: number; marks: Record<string, number> };
+
+export type CachedPairing = CachedMeta & { conversations: Map<string, CachedConversation>; elements: StoredElement[]; read: ReadMarks | null };
 
 // What the store keeps on disk per pairing. Notices and activity never go in.
 export interface StoreCache {
@@ -17,6 +20,7 @@ export interface StoreCache {
   saveConversation(pairingId: string, conv: string, data: CachedConversation): void;
   // The phone is the only place elements are kept.
   saveElements(pairingId: string, elements: StoredElement[]): void;
+  saveRead(pairingId: string, read: ReadMarks): void;
   forgetConversation(pairingId: string, conv: string): void;
   forgetPairing(pairingId: string): void;
   flush(): void;

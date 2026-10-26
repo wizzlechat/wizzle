@@ -57,56 +57,59 @@ export default function Conversations() {
     return manage(row.agent);
   }
 
+  const bridgeButton = (
+    <Button
+      size="$3"
+      circular
+      chromeless
+      scaleIcon={1.3}
+      aria-label="Switch bridge"
+      icon={<Server />}
+      onPress={() => router.push('/installs')}
+    />
+  );
+  const actions = (
+    <XStack items="center">
+      <Button
+        size="$3"
+        circular
+        chromeless
+        scaleIcon={1.3}
+        aria-label="Elements"
+        icon={<Cards />}
+        onPress={() => router.push('/elements')}
+      />
+      {canCreate ? (
+        <Button
+          size="$3"
+          circular
+          chromeless
+          scaleIcon={1.3}
+          aria-label="New agent"
+          icon={<Plus size={22} />}
+          onPress={() => router.push('/create-agent')}
+        />
+      ) : null}
+      <Button
+        size="$3"
+        circular
+        chromeless
+        scaleIcon={1.3}
+        aria-label="Settings"
+        icon={<Gear />}
+        onPress={() => router.push('/settings')}
+      />
+    </XStack>
+  );
+
   return (
     <>
       <Stack.Screen
         options={{
           title: conn.pairing.name ?? 'wizzle',
           headerTitle: ({ children, tintColor }) => <BridgeTitle title={children} color={tintColor} phase={conn.phase} />,
-          headerLeft: () => (
-            <Button
-              size="$3"
-              circular
-              chromeless
-              scaleIcon={1.3}
-              aria-label="Switch bridge"
-              icon={<Server />}
-              onPress={() => router.push('/installs')}
-            />
-          ),
-          headerRight: () => (
-            <XStack items="center">
-              <Button
-                size="$3"
-                circular
-                chromeless
-                scaleIcon={1.3}
-                aria-label="Elements"
-                icon={<Cards />}
-                onPress={() => router.push('/elements')}
-              />
-              {canCreate ? (
-                <Button
-                  size="$3"
-                  circular
-                  chromeless
-                  scaleIcon={1.3}
-                  aria-label="New agent"
-                  icon={<Plus size={22} />}
-                  onPress={() => router.push('/create-agent')}
-                />
-              ) : null}
-              <Button
-                size="$3"
-                circular
-                chromeless
-                scaleIcon={1.3}
-                aria-label="Settings"
-                icon={<Gear />}
-                onPress={() => router.push('/settings')}
-              />
-            </XStack>
-          ),
+          headerLeft: () => bridgeButton,
+          headerRight: () => actions,
         }}
       />
       <YStack flex={1}>
@@ -180,6 +183,10 @@ export default function Conversations() {
               capabilities={snapshot.capabilities}
               onPick={(next) => setAction({ agent: action.agent, prompt: next })}
               onResumed={() => setAction(null)}
+              onKeys={() => {
+                setAction(null);
+                router.push(`/agent-keys?agent=${encodeURIComponent(action.agent.id)}`);
+              }}
             />
           </Menu>
         ) : action ? (
@@ -217,12 +224,14 @@ function AgentHeader({
   onManage: (() => void) | undefined;
 }) {
   const paused = group.agent.status === 'paused';
+  const unread = group.conversations.reduce((sum, row) => sum + row.unread, 0);
   return (
     <XStack items="center" gap="$2" pl="$4" pr="$2" py="$2" minH={48} borderBottomWidth={LINE} borderColor="$color5">
       <Face seed={group.agent.id} />
       <Text flex={1} fontSize="$2" fontWeight="700" color="$color11" numberOfLines={1}>
         {group.agent.name}
       </Text>
+      {unread > 0 ? <Badge count={unread} /> : null}
       {paused ? <PausedLabel /> : null}
       {canTopic && !paused ? (
         <Button size="$2" chromeless icon={<Plus size={16} />} aria-label={`New topic for ${group.agent.name}`} onPress={onNewTopic}>
@@ -272,9 +281,12 @@ function Row({ row, grouped, onPress, onManage }: { row: ConversationRow; groupe
           </Text>
         ) : null}
       </XStack>
-      <Text mt="$1.5" fontSize="$2" color={busy ? '$blue10' : '$color11'} numberOfLines={1}>
-        {preview || 'No messages yet'}
-      </Text>
+      <XStack mt="$1.5" items="center" gap="$2">
+        <Text flex={1} fontSize="$2" color={busy ? '$blue10' : '$color11'} numberOfLines={1}>
+          {preview || 'No messages yet'}
+        </Text>
+        {row.unread > 0 ? <Badge count={row.unread} /> : null}
+      </XStack>
     </>
   );
   if (grouped) {

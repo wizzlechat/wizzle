@@ -20,6 +20,11 @@ import {
   type PhoneMessage,
   type Question,
   type QuestionOption,
+  type Secret,
+  type SecretChanges,
+  type SecretInjection,
+  type SecretInput,
+  type SecretType,
   type SessionEvent,
   type TemplateInfo,
   type TextFormat,
@@ -68,19 +73,23 @@ export type StoreLink = {
 export type StoreOptions = { link: StoreLink; newId: () => string; now?: () => number; cache?: StoreCache; files?: FileStore };
 
 // What the create screen collects. Only one of template and copyFrom is ever set.
-export type CreateRequest = { name: string; purpose?: string; template?: string; copyFrom?: string };
+export type CreateRequest = { name: string; purpose?: string; template?: string; copyFrom?: string; secrets?: string[] };
 
 type PendingSend = { t: string; conv?: string; msgId?: string };
 
 type Settle = { resolve: (conv: string) => void; reject: (failure: SendFailure) => void };
 
-// A topic or agent request answers the screen that asked, so its error never becomes a notice.
+// A topic, agent or key request answers the screen that asked, so its error never becomes a notice.
 type TopicPending = Settle &
   (
     | { kind: 'create'; agentId: string; title: string }
     | { kind: 'rename'; conv: string }
     | { kind: 'delete'; conv: string }
+    | { kind: 'clear'; conv: string }
     | { kind: 'pause' | 'resume' | 'restart' | 'deleteAgent'; agentId: string }
+    | { kind: 'createSecret' | 'updateSecret' }
+    | { kind: 'deleteSecret'; secretId: string }
+    | { kind: 'attach' | 'detach'; agentId: string; secretId: string }
   );
 
 const OFFLINE: SendFailure = { code: 'offline', message: 'Not connected to the bridge yet.' };
@@ -202,6 +211,7 @@ function toCapabilities(value: unknown): Capabilities {
     templates: bool(v['templates']),
     lifecycle: bool(v['lifecycle']),
     deleteAgent: bool(v['deleteAgent']),
+    keys: bool(v['keys']),
   };
 }
 
@@ -213,15 +223,57 @@ function toTemplateInfo(value: unknown): TemplateInfo | null {
   const agentName = str(value['agentName']);
   const description = str(value['description']);
   const version = str(value['version']);
+  const tasks = num(value['tasks']);
+  const mcpServers = num(value['mcpServers']);
+  const skills = num(value['skills']);
+  const category = str(value['category']);
   return {
     ref,
     name,
-    tasks: num(value['tasks']) ?? 0,
-    mcpServers: num(value['mcpServers']) ?? 0,
-    skills: num(value['skills']) ?? 0,
+    ...(tasks !== null && { tasks }),
+    ...(mcpServers !== null && { mcpServers }),
+    ...(skills !== null && { skills }),
     ...(agentName !== null && { agentName }),
     ...(description !== null && { description }),
     ...(version !== null && { version }),
+    ...(category !== null && { category, downloaded: value['downloaded'] === true }),
+  };
+}
+
+function toInjection(value: unknown): SecretInjection | undefined {
+  if (!isRecord(value)) return undefined;
+  const headerName = str(value['headerName']);
+  const valueFormat = str(value['valueFormat']);
+  if (headerName) return { headerName, ...(valueFormat !== null && { valueFormat }) };
+  const paramName = str(value['paramName']);
+  const paramFormat = str(value['paramFormat']);
+  if (paramName) return { paramName, ...(paramFormat !== null && { paramFormat }) };
+  const pathTemplate = str(value['pathTemplate']);
+  if (pathTemplate) return { pathTemplate };
+  const pathRegex = str(value['pathRegex']);
+  const pathReplacement = str(value['pathReplacement']);
+  if (pathRegex && pathReplacement) return { pathRegex, pathReplacement };
+  return undefined;
+}
+
+function toSecret(value: unknown): Secret | null {
+  if (!isRecord(value)) return null;
+  const id = str(value['id']);
+  const name = str(value['name']);
+  const host = str(value['host']);
+  const type = (['generic', 'anthropic', 'openai'] as SecretType[]).find((one) => one === value['type']);
+  if (!id || name === null || host === null || !type) return null;
+  const path = str(value['path']);
+  const injection = toInjection(value['injection']);
+  const createdAt = num(value['createdAt']);
+  return {
+    id,
+    name,
+    type,
+    host,
+    ...(path !== null && { path }),
+    ...(injection !== undefined && { injection }),
+    ...(createdAt !== null && { createdAt }),
   };
 }
 
@@ -248,6 +300,7 @@ function toConversation(value: unknown): Conversation | null {
   if (!id || !agentId) return null;
   const lastAt = num(value['lastAt']);
   const createdAt = num(value['createdAt']);
+  const lastAgentAt = num(value['lastAgentAt']);
   return {
     id,
     agentId,
@@ -255,6 +308,7 @@ function toConversation(value: unknown): Conversation | null {
     ...(lastAt !== null && { lastAt }),
     ...(value['topic'] === true && { topic: true }),
     ...(createdAt !== null && { createdAt }),
+    ...(lastAgentAt !== null && { lastAgentAt }),
   };
 }
 
@@ -415,6 +469,81 @@ function plainToken(token: Token): string {
   return typeof rest.text === 'string' ? rest.text : '';
 }
 
+// A message as it reads without its markdown, for copying: blocks a blank line apart, list items one per line.
+export function plainMessage(markdown: string): string {
+  return lexer(markdown)
+    .map(copyBlock)
+    .filter((block) => block.length > 0)
+    .join('\n\n');
+}
+
+function copyBlock(token: Token): string {
+  switch (token.type) {
+    case 'space':
+    case 'hr':
+    case 'html':
+    case 'def':
+      return '';
+    case 'code':
+      return token.text;
+    case 'blockquote':
+      return (token.tokens ?? [])
+        .map(copyBlock)
+        .filter((block) => block.length > 0)
+        .join('\n\n');
+    case 'list': {
+      const list = token as Tokens.List;
+      const start = typeof list.start === 'number' ? list.start : 1;
+      return list.items
+        .map((item, i) => `${list.ordered ? `${start + i}.` : '\u2022'} ${item.tokens.map(copyBlock).join('\n').trim()}`)
+        .join('\n');
+    }
+    case 'table': {
+      const table = token as Tokens.Table;
+      return [table.header, ...table.rows].map((row) => row.map((cell) => copyInline(cell.tokens)).join('\t')).join('\n');
+    }
+  }
+  const rest = token as Tokens.Generic;
+  if (rest.tokens) return copyInline(rest.tokens).trim();
+  return typeof rest.text === 'string' ? rest.text.trim() : '';
+}
+
+// A link keeps its address beside its words, since plain text cannot hold it any other way.
+function copyInline(tokens: Token[]): string {
+  return tokens
+    .map((token) => {
+      if (token.type === 'link') {
+        const label = copyInline(token.tokens ?? []);
+        return label === token.href ? label : `${label} (${token.href})`;
+      }
+      if (token.type === 'br') return '\n';
+      if (token.type === 'html' || token.type === 'checkbox') return '';
+      const rest = token as Tokens.Generic;
+      if (rest.tokens) return copyInline(rest.tokens);
+      return typeof rest.text === 'string' ? rest.text : '';
+    })
+    .join('');
+}
+
+// Agent rows carry the bridge's clock, so read marks compare against them and never the phone's.
+function newestAgentAt(messages: ChatEntry[]): number | undefined {
+  let at: number | undefined;
+  for (const entry of messages) if (entry.role === 'agent' && (at === undefined || entry.at > at)) at = entry.at;
+  return at;
+}
+
+// A transcript array is replaced whenever it changes, so its count holds until it or the mark does.
+const unreadCounts = new WeakMap<ChatEntry[], { mark: number; count: number }>();
+
+function unreadOf(messages: ChatEntry[], mark: number): number {
+  const cached = unreadCounts.get(messages);
+  if (cached?.mark === mark) return cached.count;
+  let count = 0;
+  for (const entry of messages) if (entry.role === 'agent' && entry.at > mark) count += 1;
+  unreadCounts.set(messages, { mark, count });
+  return count;
+}
+
 function emptyConversation(id: string): ConversationState {
   return { id, messages: [], activity: null, questions: [], approvals: [], notices: [], hasMore: false, loading: false, requested: false };
 }
@@ -452,6 +581,10 @@ export class WizzleStore {
   private catalog: Conversation[] = [];
   private templates: TemplateInfo[] = [];
   private templatesRequested = false;
+  private secrets: Secret[] | null = null;
+  private agentSecrets: Record<string, string[]> = {};
+  private keysError: SendFailure | null = null;
+  private newestSecret: { id: string; seq: number } | null = null;
   private create: CreateState | null = null;
   private hello: BridgeHello | null = null;
   private notices: Notice[] = [];
@@ -461,6 +594,8 @@ export class WizzleStore {
   private readonly files: FileStore | null;
   private readonly historyBefore = new Map<string, string | undefined>();
   private readonly elements = new Map<string, StoredElement>();
+  private readonly readMarks = new Map<string, number>();
+  private readFloor = 0;
   // Sends wait their turn here, so a message never overtakes one still reading its files.
   private chain: Promise<void> = Promise.resolve();
   private queued = 0;
@@ -565,10 +700,18 @@ export class WizzleStore {
   hydrate(pairingId: string | null): void {
     this.reset();
     this.pairingId = pairingId;
-    if (!pairingId || !this.cache) return;
-    const cached = this.cache.load(pairingId);
-    if (!cached) return;
+    if (!pairingId) return;
     const now = this.now();
+    const cached = this.cache?.load(pairingId) ?? null;
+    // What the phone held before it kept read marks, or before this pairing, counts as read.
+    if (cached?.read && typeof cached.read.floor === 'number') {
+      this.readFloor = cached.read.floor;
+      for (const [conv, at] of Object.entries(cached.read.marks ?? {})) if (typeof at === 'number') this.readMarks.set(conv, at);
+    } else {
+      this.readFloor = now;
+      this.persistRead();
+    }
+    if (!cached) return;
     this.hello = cached.hello;
     this.agents = cached.agents;
     this.catalog = cached.catalog;
@@ -628,6 +771,11 @@ export class WizzleStore {
     return this.ask({ t: 'delete_conversation', conv }, (settle) => ({ kind: 'delete', conv, ...settle }));
   }
 
+  // Resolves once the bridge has dropped the session; the chat stays listed, empty.
+  clearChat(conv: string): Promise<string> {
+    return this.ask({ t: 'clear', conv }, (settle) => ({ kind: 'clear', conv, ...settle }));
+  }
+
   // Each resolves with the agent id once the bridge sends the agent back, or agent_deleted for a delete.
   pauseAgent(agentId: string): Promise<string> {
     return this.ask({ t: 'pause_agent', agentId }, (settle) => ({ kind: 'pause', agentId, ...settle }));
@@ -649,13 +797,48 @@ export class WizzleStore {
     return this.ask({ t: 'delete_agent', agentId, removeWorkspace }, (settle) => ({ kind: 'deleteAgent', agentId, ...settle }));
   }
 
-  // Once per connection: the hello that advertises the capability asks for the list.
-  loadTemplates(): void {
-    if (this.templatesRequested || !this.hello?.capabilities.templates) return;
+  // Once per connection, and again with force: the library may have been out of reach the first time.
+  loadTemplates(force = false): void {
+    if ((this.templatesRequested && !force) || !this.hello?.capabilities.templates) return;
     const packetId = this.link.send({ t: 'templates' });
     if (!packetId) return;
     this.templatesRequested = true;
     this.track(packetId, { t: 'templates' });
+  }
+
+  // Asked each time a screen shows keys, since the vault also changes on the host.
+  loadSecrets(): void {
+    if (!this.hello?.capabilities.keys) return;
+    const packetId = this.link.send({ t: 'secrets' });
+    if (packetId) this.track(packetId, { t: 'secrets' });
+  }
+
+  loadAgentSecrets(agentId: string): void {
+    if (!this.hello?.capabilities.keys) return;
+    const packetId = this.link.send({ t: 'agent_secrets', agentId });
+    if (packetId) this.track(packetId, { t: 'agent_secrets' });
+  }
+
+  // Each resolves with the key's id once the bridge has saved it.
+  createSecret(secret: SecretInput): Promise<string> {
+    return this.ask({ t: 'create_secret', secret }, (settle) => ({ kind: 'createSecret', ...settle }));
+  }
+
+  updateSecret(secretId: string, changes: SecretChanges): Promise<string> {
+    return this.ask({ t: 'update_secret', secretId, changes }, (settle) => ({ kind: 'updateSecret', ...settle }));
+  }
+
+  deleteSecret(secretId: string): Promise<string> {
+    return this.ask({ t: 'delete_secret', secretId }, (settle) => ({ kind: 'deleteSecret', secretId, ...settle }));
+  }
+
+  // Each resolves with the agent id once the bridge lists the agent's keys with the change.
+  attachSecret(agentId: string, secretId: string): Promise<string> {
+    return this.ask({ t: 'attach_secret', agentId, secretId }, (settle) => ({ kind: 'attach', agentId, secretId, ...settle }));
+  }
+
+  detachSecret(agentId: string, secretId: string): Promise<string> {
+    return this.ask({ t: 'detach_secret', agentId, secretId }, (settle) => ({ kind: 'detach', agentId, secretId, ...settle }));
   }
 
   // One create at a time: a second tap while the host is working is refused, not queued.
@@ -678,12 +861,22 @@ export class WizzleStore {
       ...(request.template !== undefined && { template: request.template }),
       ...(request.copyFrom !== undefined && { copyFrom: request.copyFrom }),
       ...(timezone !== undefined && { timezone }),
+      ...(request.secrets !== undefined && request.secrets.length > 0 && { secrets: request.secrets }),
     });
     this.create = packetId
       ? { name, packetId, state: 'sending', startedAt }
       : { name, packetId: null, state: 'failed', error: OFFLINE, startedAt };
     this.changed();
     return this.create;
+  }
+
+  // Called while a chat is on screen, so what the agent sent there so far is read.
+  markRead(conv: string): void {
+    const newest = newestAgentAt(this.convs.get(conv)?.messages ?? []);
+    if (newest === undefined || newest <= this.readMark(conv)) return;
+    this.readMarks.set(conv, newest);
+    this.persistRead();
+    this.changed();
   }
 
   // Called when a chat screen opens. The first page is fetched once per app run.
@@ -718,10 +911,16 @@ export class WizzleStore {
     this.questionHome.clear();
     this.historyBefore.clear();
     this.elements.clear();
+    this.readMarks.clear();
+    this.readFloor = 0;
     this.agents = [];
     this.catalog = [];
     this.templates = [];
     this.templatesRequested = false;
+    this.secrets = null;
+    this.agentSecrets = {};
+    this.keysError = null;
+    this.newestSecret = null;
     this.create = null;
     this.hello = null;
     this.notices = [];
@@ -797,12 +996,23 @@ export class WizzleStore {
   private forget(conv: string): void {
     this.convs.delete(conv);
     this.historyBefore.delete(conv);
+    if (this.readMarks.delete(conv)) this.persistRead();
     for (const [questionId, home] of [...this.questionHome]) {
       if (home === conv) this.questionHome.delete(questionId);
     }
     if (!this.pairingId) return;
     this.cache?.forgetConversation(this.pairingId, conv);
     this.files?.forgetConversation(this.pairingId, conv);
+  }
+
+  // A cleared chat keeps its place in the list and starts over from an empty transcript.
+  private wipe(conv: string): void {
+    this.historyBefore.delete(conv);
+    for (const [questionId, home] of [...this.questionHome]) {
+      if (home === conv) this.questionHome.delete(questionId);
+    }
+    if (this.pairingId) this.files?.forgetConversation(this.pairingId, conv);
+    this.patch(conv, { ...emptyConversation(conv), requested: true });
   }
 
   // The chat row links to the stored element; an older copy of the same id never replaces a newer one.
@@ -826,6 +1036,23 @@ export class WizzleStore {
       if (this.pairingId) this.cache?.saveElements(this.pairingId, [...this.elements.values()]);
     }
     return { element: { agentId, id: element.id } };
+  }
+
+  private readMark(conv: string): number {
+    return this.readMarks.get(conv) ?? this.readFloor;
+  }
+
+  private persistRead(): void {
+    if (this.pairingId) this.cache?.saveRead(this.pairingId, { floor: this.readFloor, marks: Object.fromEntries(this.readMarks) });
+  }
+
+  // An agent message the bridge holds and this phone does not means frames were lost, so the latest page comes again.
+  private catchUp(): void {
+    for (const conv of this.catalog) {
+      const state = this.convs.get(conv.id);
+      if (conv.lastAgentAt === undefined || state?.loading) continue;
+      if (conv.lastAgentAt > (newestAgentAt(state?.messages ?? []) ?? 0)) this.requestHistory(conv.id);
+    }
   }
 
   private persistMeta(): void {
@@ -954,6 +1181,7 @@ export class WizzleStore {
         live.add(SYSTEM_CONV);
         for (const id of [...this.convs.keys()]) if (!live.has(id)) this.forget(id);
         this.linkCreatedConversation();
+        this.catchUp();
         this.persistMeta();
         this.changed();
         return;
@@ -1129,6 +1357,12 @@ export class WizzleStore {
         const conv = str(h['conv']);
         const event = h['event'];
         if (!conv || typeof event !== 'string') return void this.drop();
+        // The bridge clears a chat by dropping its session, so the transcript goes with it.
+        if (event === 'cleared') {
+          this.wipe(conv);
+          this.settleTopics((pending) => pending.kind === 'clear' && pending.conv === conv, conv);
+          return;
+        }
         this.upsert(conv, {
           conv,
           msgId: `session:${this.newId()}`,
@@ -1159,6 +1393,57 @@ export class WizzleStore {
         this.changed();
         return;
       }
+      case 'secrets': {
+        const raw = Array.isArray(h['secrets']) ? h['secrets'] : [];
+        this.secrets = raw.map(toSecret).filter((secret): secret is Secret => secret !== null);
+        this.keysError = null;
+        this.changed();
+        return;
+      }
+      case 'secret': {
+        const secret = toSecret(h['secret']);
+        if (!secret) return void this.drop();
+        const list = this.secrets ?? [];
+        this.secrets = list.some((one) => one.id === secret.id)
+          ? list.map((one) => (one.id === secret.id ? secret : one))
+          : [...list, secret];
+        const ref = str(h['ref']);
+        const pending = ref ? this.topicRequests.get(ref) : undefined;
+        if (ref && pending && (pending.kind === 'createSecret' || pending.kind === 'updateSecret')) {
+          this.topicRequests.delete(ref);
+          if (pending.kind === 'createSecret') this.newestSecret = { id: secret.id, seq: (this.newestSecret?.seq ?? 0) + 1 };
+          pending.resolve(secret.id);
+        }
+        this.changed();
+        return;
+      }
+      case 'secret_deleted': {
+        const secretId = str(h['secretId']);
+        if (!secretId) return void this.drop();
+        if (this.secrets) this.secrets = this.secrets.filter((one) => one.id !== secretId);
+        this.agentSecrets = Object.fromEntries(
+          Object.entries(this.agentSecrets).map(([agentId, ids]) => [agentId, ids.filter((id) => id !== secretId)]),
+        );
+        this.settleTopics((pending) => pending.kind === 'deleteSecret' && pending.secretId === secretId, secretId);
+        this.changed();
+        return;
+      }
+      case 'agent_secrets': {
+        const agentId = str(h['agentId']);
+        if (!agentId) return void this.drop();
+        const raw = Array.isArray(h['secretIds']) ? h['secretIds'] : [];
+        const ids = raw.filter((id): id is string => typeof id === 'string');
+        this.agentSecrets = { ...this.agentSecrets, [agentId]: ids };
+        this.keysError = null;
+        this.settleTopics(
+          (pending) =>
+            (pending.kind === 'attach' && pending.agentId === agentId && ids.includes(pending.secretId)) ||
+            (pending.kind === 'detach' && pending.agentId === agentId && !ids.includes(pending.secretId)),
+          agentId,
+        );
+        this.changed();
+        return;
+      }
       case 'error': {
         const code = str(h['code']) ?? 'error';
         const message = str(h['message']) ?? 'The bridge rejected that.';
@@ -1182,6 +1467,12 @@ export class WizzleStore {
           if (failed) return;
         }
         if (pending?.conv && pending.t === 'history') this.patch(pending.conv, { loading: false });
+        // A key screen shows its own listing failure.
+        if (pending?.t === 'secrets' || pending?.t === 'agent_secrets') {
+          this.keysError = { code, message };
+          this.changed();
+          return;
+        }
         this.note(pending?.conv, code, message);
         return;
       }
@@ -1259,6 +1550,7 @@ export class WizzleStore {
       preview: last ? previewOf(last) : '',
       activity: state?.activity ?? null,
       questions: (state?.questions.length ?? 0) + (state?.approvals.length ?? 0),
+      unread: state ? unreadOf(state.messages, this.readMark(conv.id)) : 0,
       topic: conv.topic === true,
     };
   }
@@ -1290,6 +1582,10 @@ export class WizzleStore {
       conversations,
       agentGroups: this.group(conversations),
       templates: this.templates,
+      secrets: this.secrets,
+      agentSecrets: this.agentSecrets,
+      keysError: this.keysError,
+      newestSecret: this.newestSecret,
       create: this.create,
       notices: this.notices,
       elements: [...this.elements.values()].sort((a, b) => b.receivedAt - a.receivedAt),

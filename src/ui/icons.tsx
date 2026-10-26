@@ -178,6 +178,44 @@ export function Trash({ size = 22, color }: { size?: number; color?: string }) {
   );
 }
 
+export function Copy({ size = 22, color }: { size?: number; color?: string }) {
+  const ink = useInk(color);
+  return (
+    <Outline size={size} ink={ink}>
+      <Rect x={8} y={8} width={14} height={14} rx={2} />
+      <Path d="M4 16a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2" />
+    </Outline>
+  );
+}
+
+export function Stop({ size = 22, color }: { size?: number; color?: string }) {
+  const ink = useInk(color);
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24">
+      <Rect x={6} y={6} width={12} height={12} rx={2.5} fill={ink} />
+    </Svg>
+  );
+}
+
+export function Speaker({ size = 22, color }: { size?: number; color?: string }) {
+  const ink = useInk(color);
+  return (
+    <Outline size={size} ink={ink}>
+      <Path d="M11 5L6 9H2v6h4l5 4V5zM15.54 8.46a5 5 0 0 1 0 7.07M19.07 4.93a10 10 0 0 1 0 14.14" />
+    </Outline>
+  );
+}
+
+export function Key({ size = 22, color }: { size?: number; color?: string }) {
+  const ink = useInk(color);
+  return (
+    <Outline size={size} ink={ink}>
+      <Circle cx={7.5} cy={15.5} r={5.5} />
+      <Path d="M21 2l-9.6 9.6M15.5 7.5l2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4" />
+    </Outline>
+  );
+}
+
 export function Pencil({ size = 22, color }: { size?: number; color?: string }) {
   const ink = useInk(color);
   return (

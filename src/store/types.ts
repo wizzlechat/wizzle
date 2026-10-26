@@ -9,6 +9,7 @@ import type {
   Conversation,
   FileMeta,
   Question,
+  Secret,
   TemplateInfo,
   TextFormat,
   UiElement,
@@ -75,6 +76,7 @@ export type ConversationRow = Conversation & {
   preview: string;
   activity: Activity | null;
   questions: number;
+  unread: number;
   topic: boolean;
 };
 
@@ -99,6 +101,12 @@ export type StoreSnapshot = {
   conversations: ConversationRow[];
   agentGroups: AgentGroup[];
   templates: TemplateInfo[];
+  // The vault as the bridge last listed it; null until it has.
+  secrets: Secret[] | null;
+  agentSecrets: Record<string, string[]>;
+  keysError: SendFailure | null;
+  // The key this phone created last; seq rises with each, so a screen that sent the phone to add one can pick it.
+  newestSecret: { id: string; seq: number } | null;
   create: CreateState | null;
   notices: Notice[];
   elements: StoredElement[];

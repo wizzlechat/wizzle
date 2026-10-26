@@ -10,7 +10,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.wizzleai.ios",
-      "buildNumber": "1.0.5",
+      "buildNumber": "1.0.10",
       "appleTeamId": "L96WZ5P5WD",
       "config": {
         "usesNonExemptEncryption": false
@@ -44,7 +44,14 @@
           "cameraPermission": "wizzle scans the pairing code shown by your bridge."
         }
       ],
-      "expo-sharing"
+      "expo-sharing",
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "wizzle listens while you dictate a message.",
+          "speechRecognitionPermission": "wizzle sends what you dictate to Apple's speech recognition to turn it into message text."
+        }
+      ]
     ]
   }
 }

@@ -1,6 +1,6 @@
 import { openDatabaseSync, type SQLiteDatabase } from 'expo-sqlite';
 import type { Agent, Conversation } from '../protocol/index.ts';
-import { trimMessages, type CachedConversation, type CachedMeta, type CachedPairing, type StoreCache } from './cache.ts';
+import { trimMessages, type CachedConversation, type CachedMeta, type CachedPairing, type ReadMarks, type StoreCache } from './cache.ts';
 import type { BridgeHello, ChatEntry, OpenApproval, OpenQuestion, StoredElement } from './types.ts';
 
 const DB_NAME = 'wizzle-cache.db';
@@ -54,11 +54,13 @@ export class SqliteCache implements StoreCache {
     try {
       const meta: CachedMeta = { hello: null, agents: [], catalog: [] };
       let elements: StoredElement[] = [];
+      let read: ReadMarks | null = null;
       for (const row of this.db.getAllSync<MetaRow>('SELECT key, value FROM meta WHERE pairing = ?', pairingId)) {
         if (row.key === 'hello') meta.hello = (parseJson(row.value) as BridgeHello | null) ?? null;
         else if (row.key === 'agents') meta.agents = list<Agent>(row.value);
         else if (row.key === 'catalog') meta.catalog = list<Conversation>(row.value);
         else if (row.key === 'elements') elements = list<StoredElement>(row.value);
+        else if (row.key === 'read') read = (parseJson(row.value) as ReadMarks | null) ?? null;
       }
       const conversations = new Map<string, CachedConversation>();
       const rows = this.db.getAllSync<ConversationRow>('SELECT conv, messages, questions, approvals FROM conversations WHERE pairing = ?', pairingId);
@@ -69,7 +71,7 @@ export class SqliteCache implements StoreCache {
           approvals: list<OpenApproval>(row.approvals),
         });
       }
-      return { ...meta, conversations, elements };
+      return { ...meta, conversations, elements, read };
     } catch (error) {
       console.warn('wizzle: cache load failed', error);
       return null;
@@ -92,6 +94,12 @@ export class SqliteCache implements StoreCache {
   saveElements(pairingId: string, elements: StoredElement[]): void {
     this.write(() => {
       this.db?.runSync('INSERT OR REPLACE INTO meta (pairing, key, value) VALUES (?, ?, ?)', pairingId, 'elements', JSON.stringify(elements));
+    });
+  }
+
+  saveRead(pairingId: string, read: ReadMarks): void {
+    this.write(() => {
+      this.db?.runSync('INSERT OR REPLACE INTO meta (pairing, key, value) VALUES (?, ?, ?)', pairingId, 'read', JSON.stringify(read));
     });
   }
 

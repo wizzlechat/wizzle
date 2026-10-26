@@ -180,3 +180,17 @@ export function DeleteTopic({ row, onClose }: { row: ConversationRow; onClose: (
     />
   );
 }
+
+export function ClearChat({ row, onClose }: { row: ConversationRow; onClose: () => void }) {
+  const agentName = row.agent?.name ?? row.title;
+  return (
+    <ConfirmPrompt
+      heading="Clear this chat?"
+      body={`Its messages and files are deleted from the phone and the bridge, and ${agentName} starts this chat fresh. Its memory and elements stay.`}
+      action="Clear"
+      submit={() => store.clearChat(row.id)}
+      onClose={onClose}
+      onDone={onClose}
+    />
+  );
+}

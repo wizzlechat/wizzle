@@ -28,6 +28,10 @@ function hue(seed: string): number {
   return Math.abs(hash) % 360;
 }
 
+export function faceColor(seed: string): string {
+  return `hsl(${hue(seed)}, 55%, 58%)`;
+}
+
 function between(min: number, max: number): number {
   return min + Math.random() * (max - min);
 }
@@ -38,7 +42,7 @@ export function Face({ seed, size = 20, thinking = false }: { seed: string; size
   const lookX = useRef(new Animated.Value(0)).current;
   const lookY = useRef(new Animated.Value(0)).current;
   const bob = useRef(new Animated.Value(0)).current;
-  const color = useMemo(() => `hsl(${hue(seed)}, 55%, 58%)`, [seed]);
+  const color = useMemo(() => faceColor(seed), [seed]);
   const reach = size * 0.12;
 
   useEffect(() => {

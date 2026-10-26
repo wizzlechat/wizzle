@@ -14,8 +14,8 @@ import {
 } from '../src/protocol/index.ts';
 import type { FileStore } from '../src/files/types.ts';
 import { RelayClient } from '../src/relay/client.ts';
-import type { CachedConversation, CachedMeta, CachedPairing, StoreCache } from '../src/store/cache.ts';
-import { WizzleStore, attachmentFailure, type StoreLink } from '../src/store/store.ts';
+import type { CachedConversation, CachedMeta, CachedPairing, ReadMarks, StoreCache } from '../src/store/cache.ts';
+import { WizzleStore, attachmentFailure, plainMessage, type StoreLink } from '../src/store/store.ts';
 import type { Attachment, ChatEntry, SendFailure, StoredElement } from '../src/store/types.ts';
 import { FakeBridge, FakeRelay, newPairing, phoneKeys, phoneSecrets, silentLog, until } from './fake-relay.ts';
 
@@ -27,14 +27,16 @@ class FakeCache implements StoreCache {
   readonly meta = new Map<string, CachedMeta>();
   readonly rows = new Map<string, Map<string, CachedConversation>>();
   readonly elements = new Map<string, StoredElement[]>();
+  readonly read = new Map<string, ReadMarks>();
   flushed = 0;
 
   load(pairingId: string): CachedPairing | null {
     const meta = this.meta.get(pairingId);
     const rows = this.rows.get(pairingId);
     const elements = this.elements.get(pairingId);
-    if (!meta && !rows && !elements) return null;
-    return { hello: null, agents: [], catalog: [], ...meta, conversations: new Map(rows ?? []), elements: elements ?? [] };
+    const read = this.read.get(pairingId);
+    if (!meta && !rows && !elements && !read) return null;
+    return { hello: null, agents: [], catalog: [], ...meta, conversations: new Map(rows ?? []), elements: elements ?? [], read: read ?? null };
   }
   saveMeta(pairingId: string, meta: CachedMeta): void {
     this.meta.set(pairingId, meta);
@@ -47,12 +49,16 @@ class FakeCache implements StoreCache {
   saveElements(pairingId: string, elements: StoredElement[]): void {
     this.elements.set(pairingId, elements);
   }
+  saveRead(pairingId: string, read: ReadMarks): void {
+    this.read.set(pairingId, read);
+  }
   forgetConversation(pairingId: string, conv: string): void {
     this.rows.get(pairingId)?.delete(conv);
   }
   forgetPairing(pairingId: string): void {
     this.meta.delete(pairingId);
     this.rows.delete(pairingId);
+    this.read.delete(pairingId);
   }
   flush(): void {
     this.flushed += 1;
@@ -110,6 +116,7 @@ const CAPABILITIES: Capabilities = {
   templates: true,
   lifecycle: true,
   deleteAgent: true,
+  keys: true,
 };
 
 type Wired = { store: WizzleStore; bridge: FakeBridge; relay: FakeRelay; client: RelayClient; stop(): void };
@@ -494,11 +501,11 @@ test('an approval is resolved and closes the same way', async () => {
 test('a session event is written into the transcript', async () => {
   const w = await wired();
   catalog(w.bridge);
-  w.bridge.send({ t: 'session', conv: CONV, event: 'cleared', detail: 'by the owner' });
+  w.bridge.send({ t: 'session', conv: CONV, event: 'compacted', detail: 'by the owner' });
   await until(() => w.store.conversation(CONV).messages.length === 1);
   const entry = w.store.conversation(CONV).messages[0];
   assert.equal(entry?.role, 'system');
-  assert.equal(entry?.text, 'Session cleared: by the owner');
+  assert.equal(entry?.text, 'Session compacted: by the owner');
   w.stop();
 });
 
@@ -688,6 +695,14 @@ test('an error answers the topic request that asked for it and stays off the not
   const remove = await w.bridge.nextOf('delete_conversation');
   w.bridge.send({ t: 'error', ref: remove.header.id, code: 'busy', message: 'The agent is still stopping' });
   assert.equal((await removed)?.code, 'busy');
+
+  w.bridge.send({ t: 'message', message: { conv: CONV, msgId: 'c1', role: 'agent', text: 'kept', format: 'text', at: 3100 } });
+  await until(() => w.store.conversation(CONV).messages.length === 1);
+  const refused = failureOf(w.store.clearChat(CONV));
+  const clear = await w.bridge.nextOf('clear');
+  w.bridge.send({ t: 'error', ref: clear.header.id, code: 'has_tasks', message: 'This chat holds 1 scheduled task; cancel it before clearing.' });
+  assert.equal((await refused)?.code, 'has_tasks');
+  assert.equal(w.store.conversation(CONV).messages.length, 1);
 
   assert.equal(w.store.getSnapshot().notices.length, 0);
   assert.equal(w.store.conversation(TOPIC_A).notices.length, 0);
@@ -1145,6 +1160,37 @@ test('forgetting a conversation or a pairing drops its cache rows and files', as
   w.stop();
 });
 
+test('a cleared chat keeps its row and loses its transcript, questions, cache rows and files', async () => {
+  const cache = new FakeCache();
+  const files = new FakeFiles();
+  const w = await wired({ cache, files });
+  w.store.hydrate(PAIRING);
+  withTopics(w.bridge);
+  w.bridge.send({ t: 'file', conv: CONV, msgId: 'f1', file: { name: 'a.txt', mime: 'text/plain', size: 1 }, at: 6000 }, new Uint8Array([1]));
+  w.bridge.send({ t: 'file', conv: TOPIC_A, msgId: 'f2', file: { name: 'b.txt', mime: 'text/plain', size: 1 }, at: 6000 }, new Uint8Array([2]));
+  w.bridge.send({ t: 'question', question: { conv: CONV, questionId: 'q9', question: 'ship it?', options: [{ label: 'Yes', value: 'y' }] } });
+  await until(
+    () =>
+      w.store.conversation(CONV).questions.length === 1 &&
+      w.store.conversation(CONV).messages[0]?.file?.uri !== undefined &&
+      w.store.conversation(TOPIC_A).messages[0]?.file?.uri !== undefined,
+  );
+
+  const cleared = w.store.clearChat(CONV);
+  const asked = await w.bridge.nextOf('clear');
+  assert.equal(asked.header['conv'], CONV);
+  w.bridge.send({ t: 'session', conv: CONV, event: 'cleared' });
+  assert.equal(await cleared, CONV);
+
+  assert.equal(w.store.conversation(CONV).messages.length, 0);
+  assert.equal(w.store.conversation(CONV).questions.length, 0);
+  assert.ok(w.store.getSnapshot().conversations.some((row) => row.id === CONV));
+  assert.equal(cache.rows.get(PAIRING)?.get(CONV)?.messages.length, 0);
+  assert.equal(files.saved.size, 1);
+  assert.equal(w.store.conversation(TOPIC_A).messages.length, 1);
+  w.stop();
+});
+
 test('attachments go out as uploads ahead of their send, and a quick second send waits its turn', async () => {
   const files = new FakeFiles();
   const w = await wired({ files });
@@ -1257,4 +1303,243 @@ test('the cache is written as the transcript changes and the first history page 
   await until(() => w.store.conversation(CONV).loading === false);
   assert.equal(w.store.conversation(CONV).hasMore, true);
   w.stop();
+});
+
+test('agent messages count as unread until the chat is read, and the user\'s own never do', async () => {
+  const w = await wired();
+  catalog(w.bridge);
+  w.bridge.send({ t: 'message', message: message('a1', 1000, 'one') });
+  w.bridge.send({ t: 'message', message: message('u1', 1500, 'mine', 'user') });
+  w.bridge.send({ t: 'message', message: message('a2', 2000, 'two') });
+  await until(() => w.store.getSnapshot().conversations.find((c) => c.id === CONV)?.unread === 2);
+
+  w.store.markRead(CONV);
+  assert.equal(w.store.getSnapshot().conversations.find((c) => c.id === CONV)?.unread, 0);
+  w.bridge.send({ t: 'message', message: message('a3', 3000, 'three') });
+  await until(() => w.store.getSnapshot().conversations.find((c) => c.id === CONV)?.unread === 1);
+  assert.equal(w.store.getSnapshot().agentGroups[0]?.conversations[0]?.unread, 1);
+  w.stop();
+});
+
+test('read marks survive a restart and history from before the first run counts as read', async () => {
+  const cache = new FakeCache();
+  cachedCatalog(cache);
+  cache.saveConversation(PAIRING, CONV, { messages: [cachedEntry('a1', 1000, 'old')], questions: [], approvals: [] });
+  const w = await wired({ cache });
+  w.store.hydrate(PAIRING);
+  assert.equal(w.store.getSnapshot().conversations[0]?.unread, 0);
+  const floor = cache.read.get(PAIRING)?.floor ?? 0;
+  assert.ok(floor > 1000);
+
+  w.bridge.send({ t: 'message', message: message('a2', floor + 1000, 'new') });
+  w.bridge.send({ t: 'message', message: message('a3', floor + 2000, 'newer') });
+  await until(() => w.store.getSnapshot().conversations[0]?.unread === 2);
+  w.store.hydrate(PAIRING);
+  assert.equal(w.store.getSnapshot().conversations[0]?.unread, 2);
+
+  w.store.markRead(CONV);
+  w.store.hydrate(PAIRING);
+  assert.equal(cache.read.get(PAIRING)?.marks[CONV], floor + 2000);
+  assert.equal(w.store.getSnapshot().conversations[0]?.unread, 0);
+  w.stop();
+});
+
+test('a catalog naming an agent message the phone lacks fetches the latest page, and one it holds does not', async () => {
+  const w = await wired();
+  catalog(w.bridge);
+  w.bridge.send({ t: 'message', message: message('a1', 1000, 'held') });
+  await until(() => w.store.conversation(CONV).messages.length === 1);
+
+  w.bridge.send({ t: 'conversations', conversations: [{ id: CONV, agentId: 'agent-1', title: 'main', lastAgentAt: 900 }] });
+  await until(() => w.store.getSnapshot().conversations[0]?.lastAgentAt === 900);
+  assert.equal(w.store.conversation(CONV).loading, false);
+
+  w.bridge.send({ t: 'conversations', conversations: [{ id: CONV, agentId: 'agent-1', title: 'main', lastAgentAt: 2000 }] });
+  const asked = await w.bridge.nextOf('history');
+  assert.equal(asked.header['conv'], CONV);
+  assert.equal(asked.header['before'], undefined);
+  w.bridge.send({ t: 'history', conv: CONV, messages: [message('a1', 1000, 'held'), message('a2', 2000, 'lost')], hasMore: false });
+  await until(() => w.store.conversation(CONV).messages.length === 2);
+  assert.equal(w.store.getSnapshot().conversations[0]?.unread, 2);
+  w.stop();
+});
+
+test('library templates keep their category and download state, and counts only when the host has them', async () => {
+  const w = await wired();
+  catalog(w.bridge);
+  await w.bridge.nextOf('templates');
+  w.bridge.send({
+    t: 'templates',
+    templates: [
+      { ref: 'data/analyst', name: 'analyst', description: 'Answers data questions', category: 'data', downloaded: false },
+      { ref: 'sales/sdr', name: 'sdr', tasks: 1, mcpServers: 0, skills: 2, category: 'sales', downloaded: true },
+    ],
+  });
+  await until(() => w.store.getSnapshot().templates.length === 2);
+  assert.deepEqual(w.store.getSnapshot().templates, [
+    { ref: 'data/analyst', name: 'analyst', description: 'Answers data questions', category: 'data', downloaded: false },
+    { ref: 'sales/sdr', name: 'sdr', tasks: 1, mcpServers: 0, skills: 2, category: 'sales', downloaded: true },
+  ]);
+  w.store.loadTemplates(true);
+  await w.bridge.nextOf('templates');
+  w.stop();
+});
+
+test('the vault and an agent\'s keys reach the snapshot, and a listing error stays off the notice list', async () => {
+  const w = await wired();
+  catalog(w.bridge);
+  await until(() => w.store.getSnapshot().capabilities?.keys === true);
+  assert.equal(w.store.getSnapshot().secrets, null);
+  w.store.loadSecrets();
+  await w.bridge.nextOf('secrets');
+  w.bridge.send({
+    t: 'secrets',
+    secrets: [
+      { id: 's1', name: 'GitHub', type: 'generic', host: 'api.github.com', injection: { headerName: 'Authorization', valueFormat: 'Bearer {value}' } },
+      { id: 's2', name: 'Bot', type: 'generic', host: 'api.telegram.org', injection: { pathTemplate: '/bot{value}' } },
+      { id: 's3', name: 'Broken', type: 'mystery' } as never,
+    ],
+  });
+  await until(() => w.store.getSnapshot().secrets?.length === 2);
+  assert.deepEqual(w.store.getSnapshot().secrets?.[1], { id: 's2', name: 'Bot', type: 'generic', host: 'api.telegram.org', injection: { pathTemplate: '/bot{value}' } });
+
+  w.store.loadAgentSecrets('agent-1');
+  const asked = await w.bridge.nextOf('agent_secrets');
+  assert.equal(asked.header['agentId'], 'agent-1');
+  w.bridge.send({ t: 'agent_secrets', agentId: 'agent-1', secretIds: ['s1'] });
+  await until(() => w.store.getSnapshot().agentSecrets['agent-1']?.length === 1);
+
+  w.store.loadSecrets();
+  const again = await w.bridge.nextOf('secrets');
+  w.bridge.send({ t: 'error', ref: again.header.id, code: 'keys_unavailable', message: 'OneCLI could not be reached' });
+  await until(() => w.store.getSnapshot().keysError !== null);
+  assert.equal(w.store.getSnapshot().keysError?.code, 'keys_unavailable');
+  assert.equal(w.store.getSnapshot().secrets?.length, 2);
+  assert.equal(w.store.getSnapshot().notices.length, 0);
+  w.stop();
+});
+
+test('createSecret resolves with the saved id and marks it newest, and updateSecret replaces the row', async () => {
+  const w = await wired();
+  catalog(w.bridge);
+  const input = { name: 'GitHub', type: 'generic' as const, host: 'api.github.com', injection: { headerName: 'Authorization' }, value: 'ghp_x' };
+  const created = w.store.createSecret(input);
+  const sent = await w.bridge.nextOf('create_secret');
+  assert.deepEqual(sent.header['secret'], input);
+  w.bridge.send({ t: 'secret', ref: 'someone-else', secret: { id: 's0', name: 'Other', type: 'generic', host: 'a.example.com' } });
+  w.bridge.send({ t: 'secret', ref: sent.header.id, secret: { id: 's1', name: 'GitHub', type: 'generic', host: 'api.github.com', injection: { headerName: 'Authorization' } } });
+  assert.equal(await created, 's1');
+  assert.deepEqual(w.store.getSnapshot().newestSecret, { id: 's1', seq: 1 });
+  assert.deepEqual(w.store.getSnapshot().secrets?.map((secret) => secret.id), ['s0', 's1']);
+
+  const updated = w.store.updateSecret('s1', { name: 'GitHub main', path: null });
+  const change = await w.bridge.nextOf('update_secret');
+  assert.deepEqual(change.header['changes'], { name: 'GitHub main', path: null });
+  w.bridge.send({ t: 'secret', ref: change.header.id, secret: { id: 's1', name: 'GitHub main', type: 'generic', host: 'api.github.com' } });
+  assert.equal(await updated, 's1');
+  assert.equal(w.store.getSnapshot().secrets?.find((secret) => secret.id === 's1')?.name, 'GitHub main');
+  assert.equal(w.store.getSnapshot().newestSecret?.seq, 1);
+
+  const refused = w.store.createSecret({ ...input, host: 'https://x' });
+  const bad = await w.bridge.nextOf('create_secret');
+  w.bridge.send({ t: 'error', ref: bad.header.id, code: 'bad_request', message: 'Enter a hostname, not a URL' });
+  await assert.rejects(refused, (failure: SendFailure) => failure.message === 'Enter a hostname, not a URL');
+  assert.equal(w.store.getSnapshot().notices.length, 0);
+  w.stop();
+});
+
+test('deleteSecret drops the key from the vault and from every agent\'s list', async () => {
+  const w = await wired();
+  catalog(w.bridge);
+  w.bridge.send({ t: 'secrets', secrets: [{ id: 's1', name: 'GitHub', type: 'generic', host: 'api.github.com' }, { id: 's2', name: 'Bot', type: 'generic', host: 'api.telegram.org' }] });
+  w.bridge.send({ t: 'agent_secrets', agentId: 'agent-1', secretIds: ['s1', 's2'] });
+  await until(() => w.store.getSnapshot().agentSecrets['agent-1']?.length === 2);
+  const deleted = w.store.deleteSecret('s1');
+  assert.equal((await w.bridge.nextOf('delete_secret')).header['secretId'], 's1');
+  w.bridge.send({ t: 'secret_deleted', secretId: 's1' });
+  assert.equal(await deleted, 's1');
+  assert.deepEqual(w.store.getSnapshot().secrets?.map((secret) => secret.id), ['s2']);
+  assert.deepEqual(w.store.getSnapshot().agentSecrets['agent-1'], ['s2']);
+  w.stop();
+});
+
+test('attach and detach resolve once the agent\'s keys show the change, and an error answers them', async () => {
+  const w = await wired();
+  catalog(w.bridge);
+  const attached = w.store.attachSecret('agent-1', 's1');
+  const ask = await w.bridge.nextOf('attach_secret');
+  assert.deepEqual([ask.header['agentId'], ask.header['secretId']], ['agent-1', 's1']);
+  let settled = false;
+  void attached.then(() => void (settled = true));
+  w.bridge.send({ t: 'agent_secrets', agentId: 'agent-1', secretIds: [] });
+  w.bridge.send({ t: 'agent_secrets', agentId: 'agent-2', secretIds: ['s1'] });
+  await until(() => w.store.getSnapshot().agentSecrets['agent-2'] !== undefined);
+  assert.equal(settled, false);
+  w.bridge.send({ t: 'agent_secrets', agentId: 'agent-1', secretIds: ['s1'] });
+  assert.equal(await attached, 'agent-1');
+
+  const detached = w.store.detachSecret('agent-1', 's1');
+  await w.bridge.nextOf('detach_secret');
+  w.bridge.send({ t: 'agent_secrets', agentId: 'agent-1', secretIds: [] });
+  assert.equal(await detached, 'agent-1');
+
+  const failing = w.store.attachSecret('agent-1', 's9');
+  const refused = await w.bridge.nextOf('attach_secret');
+  w.bridge.send({ t: 'error', ref: refused.header.id, code: 'not_found', message: 'Secret not found' });
+  await assert.rejects(failing, (failure: SendFailure) => failure.code === 'not_found');
+  w.stop();
+});
+
+test('createAgent carries the picked keys, and none when nothing is picked', async () => {
+  const w = await wired();
+  catalog(w.bridge);
+  w.store.createAgent({ name: 'Scout', template: 'data/analyst', secrets: ['s1', 's2'] });
+  const sent = await w.bridge.nextOf('create_agent');
+  assert.deepEqual(sent.header['secrets'], ['s1', 's2']);
+  w.bridge.send({ t: 'error', ref: sent.header.id, code: 'unknown_secret', message: 'A key you picked is no longer in the vault' });
+  await until(() => w.store.getSnapshot().create?.state === 'failed');
+  w.store.createAgent({ name: 'Scout', secrets: [] });
+  assert.equal((await w.bridge.nextOf('create_agent')).header['secrets'], undefined);
+  w.stop();
+});
+
+test('copy as plain text drops the markdown and keeps blocks, list items, code and link addresses', () => {
+  const markdown = [
+    '# Weekly report',
+    '',
+    'Two **wins** and one `flag`, see [the board](https://example.com/b).',
+    '',
+    '- shipped keys',
+    '- fixed clear chat',
+    '',
+    '3. first',
+    '4. second',
+    '',
+    '> quoted line',
+    '',
+    '```',
+    'npm test',
+    '```',
+    '',
+    '---',
+    '',
+    '| Agent | Status |',
+    '| --- | --- |',
+    '| Nano | idle |',
+    '',
+    'Raw https://example.com/x stays.',
+  ].join('\n');
+  assert.equal(
+    plainMessage(markdown),
+    [
+      'Weekly report',
+      'Two wins and one flag, see the board (https://example.com/b).',
+      '\u2022 shipped keys\n\u2022 fixed clear chat',
+      '3. first\n4. second',
+      'quoted line',
+      'npm test',
+      'Agent\tStatus\nNano\tidle',
+      'Raw https://example.com/x stays.',
+    ].join('\n\n'),
+  );
 });

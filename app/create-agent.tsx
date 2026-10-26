@@ -1,5 +1,5 @@
 import { Stack, useRouter } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Paragraph, ScrollView, Text, YStack, useTheme } from 'tamagui';
 import type { TemplateInfo } from '../src/protocol/index';
@@ -10,6 +10,7 @@ import type { CreateState } from '../src/store/types';
 import { Field, Pill } from '../src/ui/controls';
 import { Check } from '../src/ui/icons';
 import { KeyboardSpace } from '../src/ui/keyboard';
+import { KeyRows, useAddedSecret } from '../src/ui/keys';
 import { ListRow, ListSection, SectionTitle } from '../src/ui/list';
 import { AgentDot, ConnectionBanner } from '../src/ui/status';
 
@@ -34,6 +35,7 @@ export default function CreateAgent() {
   const [start, setStart] = useState<Start>({ kind: 'blank' });
   const [ticket, setTicket] = useState<CreateState | null>(null);
   const [slow, setSlow] = useState(false);
+  const [picked, setPicked] = useState<ReadonlySet<string>>(new Set());
 
   const create = sameCreate(snapshot.create, ticket) ? snapshot.create : null;
   const conv = create?.conv;
@@ -53,13 +55,32 @@ export default function CreateAgent() {
     return () => clearTimeout(timer);
   }, [waiting]);
 
+  const connected = conn.phase === 'connected';
+  const keys = snapshot.capabilities?.keys === true;
+
+  // The library may have been out of reach when the connection first listed templates.
+  useEffect(() => {
+    if (!connected) return;
+    store.loadTemplates(true);
+    store.loadSecrets();
+  }, [connected]);
+
+  const pick = useCallback((secretId: string) => setPicked((current) => new Set([...current, secretId])), []);
+  useAddedSecret(snapshot.newestSecret, pick);
+
+  function toggleKey(secretId: string): void {
+    setPicked((current) => (current.has(secretId) ? new Set([...current].filter((one) => one !== secretId)) : new Set([...current, secretId])));
+  }
+
   const templates = snapshot.capabilities?.templates === true ? snapshot.templates : [];
+  const installed = templates.filter((template) => template.category === undefined);
+  const categories = [...new Set(templates.flatMap((template) => (template.category !== undefined ? [template.category] : [])))];
+  const chosen = start.kind === 'template' ? templates.find((template) => template.ref === start.ref) : undefined;
   const systemAgentId = snapshot.conversations.find((row) => row.id === SYSTEM_CONV)?.agentId;
   const sources = snapshot.agents.filter((agent) => agent.id !== systemAgentId);
   const trimmed = name.trim();
   const refusal = trimmed.length > 0 ? nameFailure(trimmed) : null;
   const folder = refusal ? null : agentFolder(trimmed);
-  const connected = conn.phase === 'connected';
   const blocked = !connected || waiting || trimmed.length === 0 || refusal !== null || purpose.trim().length > MAX_PURPOSE_CHARS;
 
   function submit(): void {
@@ -69,6 +90,8 @@ export default function CreateAgent() {
       ...(purpose.trim().length > 0 && { purpose: purpose.trim() }),
       ...(start.kind === 'template' && { template: start.ref }),
       ...(start.kind === 'copy' && { copyFrom: start.agentId }),
+      // A key deleted since it was picked is dropped here rather than refused by the host.
+      ...(keys && { secrets: [...picked].filter((id) => snapshot.secrets?.some((secret) => secret.id === id)) }),
     });
     if (started) setTicket(started);
   }
@@ -121,19 +144,34 @@ export default function CreateAgent() {
             </ListSection>
 
             {start.kind === 'template' ? (
-              <ListSection title="Template">
-                {templates.map((template) => (
-                  <ListRow
-                    key={template.ref}
-                    label={template.name}
-                    value={template.version}
-                    detail={templateDetail(template)}
-                    detailLines={4}
-                    trailing={start.ref === template.ref ? tick : null}
-                    onPress={() => setStart({ kind: 'template', ref: template.ref })}
-                  />
-                ))}
-              </ListSection>
+              <YStack gap="$4">
+                {[
+                  { title: 'Installed', list: installed },
+                  ...categories.map((category) => ({
+                    title: categoryTitle(category),
+                    list: templates.filter((template) => template.category === category),
+                  })),
+                ]
+                  .filter((group) => group.list.length > 0)
+                  .map((group) => (
+                    <ListSection key={group.title} title={group.title}>
+                      {group.list.map((template) => (
+                        <ListRow
+                          key={template.ref}
+                          label={template.name}
+                          value={template.version}
+                          detail={templateDetail(template)}
+                          detailLines={4}
+                          trailing={start.ref === template.ref ? tick : null}
+                          onPress={() => setStart({ kind: 'template', ref: template.ref })}
+                        />
+                      ))}
+                    </ListSection>
+                  ))}
+                {chosen?.category !== undefined && !chosen.downloaded ? (
+                  <Note>From the public template library. The host downloads it when you create the agent.</Note>
+                ) : null}
+              </YStack>
             ) : null}
 
             {start.kind === 'copy' ? (
@@ -151,6 +189,21 @@ export default function CreateAgent() {
                   ))}
                 </ListSection>
                 <Note>Its settings, MCP servers and instructions are copied. Installed packages are not.</Note>
+              </YStack>
+            ) : null}
+
+            {keys ? (
+              <YStack gap="$2">
+                <ListSection title="Keys">
+                  <KeyRows
+                    secrets={snapshot.secrets === null && snapshot.keysError === null ? null : (snapshot.secrets ?? [])}
+                    ticked={picked}
+                    onToggle={toggleKey}
+                    onAdd={() => router.push('/key')}
+                  />
+                </ListSection>
+                {snapshot.keysError ? <Note color="$red10">{snapshot.keysError.message}</Note> : null}
+                <Note>Ticked keys are attached to the new agent. Its model key is attached on its own.</Note>
               </YStack>
             ) : null}
 
@@ -205,11 +258,20 @@ function Note({ children, color = '$color11' }: { children: string; color?: '$co
   );
 }
 
+// The library files templates by folder name, like social-media.
+function categoryTitle(category: string): string {
+  const words = category.replace(/[-_]+/g, ' ');
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
 function templateDetail(template: TemplateInfo): string | undefined {
+  const tasks = template.tasks ?? 0;
+  const mcpServers = template.mcpServers ?? 0;
+  const skills = template.skills ?? 0;
   const parts = [
-    template.tasks > 0 ? `includes ${template.tasks} ${template.tasks === 1 ? 'task' : 'tasks'}, created paused` : null,
-    template.mcpServers > 0 ? `${template.mcpServers} MCP` : null,
-    template.skills > 0 ? `${template.skills} skills` : null,
+    tasks > 0 ? `includes ${tasks} ${tasks === 1 ? 'task' : 'tasks'}, created paused` : null,
+    mcpServers > 0 ? `${mcpServers} MCP` : null,
+    skills > 0 ? `${skills} skills` : null,
   ].filter((part): part is string => part !== null);
   const lines = [template.description, parts.join(', ')].filter((line) => line !== undefined && line.length > 0);
   return lines.length > 0 ? lines.join('\n') : undefined;

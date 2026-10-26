@@ -4,7 +4,7 @@ import type { Agent, Capabilities } from '../protocol/index.ts';
 import { store } from '../store/index.ts';
 import type { SendFailure } from '../store/types.ts';
 import { Field, Pill } from './controls.tsx';
-import { Pause, Play, Restart, Trash } from './icons.tsx';
+import { Key, Pause, Play, Restart, Trash } from './icons.tsx';
 import { ListRow } from './list.tsx';
 import { ConfirmPrompt, Overlay } from './topics.tsx';
 
@@ -14,7 +14,7 @@ const MAX_RESTART_CHARS = 2000;
 
 export function canManage(agent: Agent | null | undefined, capabilities: Capabilities | null): boolean {
   if (!agent || agent.id === 'system' || !capabilities) return false;
-  return capabilities.lifecycle || capabilities.deleteAgent;
+  return capabilities.lifecycle || capabilities.deleteAgent || capabilities.keys;
 }
 
 // The agent half of a menu; resume runs in place since it is the one action with nothing to confirm.
@@ -23,15 +23,18 @@ export function AgentMenuItems({
   capabilities,
   onPick,
   onResumed,
+  onKeys,
 }: {
   agent: Agent;
   capabilities: Capabilities | null;
   onPick: (prompt: AgentPrompt) => void;
   onResumed: () => void;
+  onKeys: () => void;
 }) {
   const paused = agent.status === 'paused';
   return (
     <>
+      {capabilities?.keys ? <ListRow icon={Key} label="Keys" onPress={onKeys} /> : null}
       {capabilities?.lifecycle ? (
         paused ? (
           <ResumeRow agent={agent} onDone={onResumed} />
