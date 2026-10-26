@@ -1,6 +1,6 @@
-import { Stack } from 'expo-router';
+import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { AppState, useColorScheme } from 'react-native';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
 import { TamaguiProvider, useTheme } from 'tamagui';
@@ -45,26 +45,39 @@ export default function RootLayout() {
     <KeyboardProvider>
       <TamaguiProvider config={tamaguiConfig} defaultTheme={scheme}>
         <StatusBar style={scheme === 'dark' ? 'light' : 'dark'} />
-        <RootStack />
+        <RootStack scheme={scheme} />
       </TamaguiProvider>
     </KeyboardProvider>
   );
 }
 
-// The native header takes its colors from the Tamagui theme so it matches the screens.
-function RootStack() {
+// The native header takes its colors from the Tamagui theme so it matches the screens. The stack's
+// native container sits behind the screens and shows when a back swipe springs past the edge.
+function RootStack({ scheme }: { scheme: 'light' | 'dark' }) {
   const theme = useTheme();
+  const appearance = useAppearance();
+  const background = theme.background.val;
+  const navTheme = useMemo(() => {
+    const base = scheme === 'dark' ? DarkTheme : DefaultTheme;
+    return { ...base, colors: { ...base.colors, background } };
+  }, [scheme, background]);
   return (
-    <Stack
-      screenOptions={{
-        headerStyle: { backgroundColor: theme.background.val },
-        headerTintColor: theme.color.val,
-        headerBackButtonDisplayMode: 'minimal',
-        contentStyle: { backgroundColor: theme.background.val },
-      }}
-    >
-      {/* An element opens over whatever linked to it. */}
-      <Stack.Screen name="element" options={{ presentation: 'modal' }} />
-    </Stack>
+    <ThemeProvider value={navTheme}>
+      <Stack
+        screenOptions={{
+          headerStyle: { backgroundColor: theme.background.val },
+          headerTintColor: theme.color.val,
+          headerBackButtonDisplayMode: 'minimal',
+          contentStyle: { backgroundColor: theme.background.val },
+          // On System the native bar takes light or dark from iOS instead of being forced from the JS theme.
+          unstable_nativeProps: {
+            headerConfig: { experimental_userInterfaceStyle: appearance === 'system' ? 'unspecified' : scheme },
+          },
+        }}
+      >
+        {/* An element opens over whatever linked to it. */}
+        <Stack.Screen name="element" options={{ presentation: 'modal' }} />
+      </Stack>
+    </ThemeProvider>
   );
 }
