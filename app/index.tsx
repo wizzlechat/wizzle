@@ -1,13 +1,13 @@
 import { Redirect, Stack, useRouter } from 'expo-router';
 import { useMemo, useState } from 'react';
 import { FlatList, Platform, Text as NativeText, type ColorValue } from 'react-native';
-import { Button, H4, Paragraph, Text, XStack, YStack } from 'tamagui';
+import { Button, H4, Paragraph, Text, XStack, YStack, getTokenValue } from 'tamagui';
 import type { Agent } from '../src/protocol/index';
 import { useConnection, type Phase } from '../src/relay/connection';
 import { store, useStore } from '../src/store';
-import type { AgentGroup, ConversationRow, Notice } from '../src/store/types';
+import type { AgentGroup, AgentProfile, ConversationRow, Notice } from '../src/store/types';
 import { AgentMenuItems, AgentPrompts, canManage, type AgentPrompt } from '../src/ui/agent-actions';
-import { Face } from '../src/ui/face';
+import { Face, useAsleep } from '../src/ui/face';
 import { Cards, Dots, Gear, Pencil, Plus, Server, Trash } from '../src/ui/icons';
 import { LINE, ListCard, ListRow } from '../src/ui/list';
 import { ConnectionBanner, PhaseDot, ThinkingDot, activityLabel } from '../src/ui/status';
@@ -15,6 +15,14 @@ import { DeleteTopic, Menu, RenameTopic, TitlePrompt } from '../src/ui/topics';
 import { shortTime } from '../src/ui/time';
 
 type AgentAction = { agent: Agent; prompt: 'menu' | AgentPrompt };
+
+// The face in an agent's large list style.
+const LARGE_FACE = 40;
+
+// An accessory stands above a large face; the row's own top padding covers part of that.
+function headroom(look: AgentProfile | undefined, padding: '$2' | '$3'): number {
+  return look?.accessory ? Math.max(0, Math.round(LARGE_FACE * 0.45) - getTokenValue(padding, 'space')) : 0;
+}
 
 type TopicAction = { row: ConversationRow; prompt: 'menu' | 'rename' | 'delete' };
 
@@ -46,8 +54,13 @@ export default function Conversations() {
     router.push(`/chat/${encodeURIComponent(conv)}`);
   }
 
+  function openProfile(agentId: string): void {
+    router.push(`/profile?agent=${encodeURIComponent(agentId)}`);
+  }
+
+  // Every agent's menu opens its profile; the lifecycle and key rows follow where the host allows them.
   function manage(agent: Agent | null): (() => void) | undefined {
-    if (!agent || !canManage(agent, snapshot.capabilities)) return undefined;
+    if (!agent) return undefined;
     return () => setAction({ agent, prompt: 'menu' });
   }
 
@@ -134,9 +147,11 @@ export default function Conversations() {
                 <ListCard>
                   <AgentHeader
                     group={item.group}
+                    look={snapshot.profiles[item.group.agent.id]}
                     canTopic={canTopic}
                     onNewTopic={() => setPrompt(item.group.agent)}
                     onManage={manage(item.group.agent)}
+                    onProfile={() => openProfile(item.group.agent.id)}
                   />
                   {item.group.conversations.map((row) => (
                     <Row key={row.id} row={row} grouped onPress={() => openChat(row.id)} onManage={manageRow(row)} />
@@ -144,7 +159,14 @@ export default function Conversations() {
                 </ListCard>
               </YStack>
             ) : (
-              <Row row={item.row} grouped={false} onPress={() => openChat(item.row.id)} onManage={manageRow(item.row)} />
+              <Row
+                row={item.row}
+                grouped={false}
+                look={snapshot.profiles[item.row.agentId]}
+                onPress={() => openChat(item.row.id)}
+                onManage={manageRow(item.row)}
+                onProfile={() => openProfile(item.row.agentId)}
+              />
             )
           }
         />
@@ -178,16 +200,26 @@ export default function Conversations() {
         ) : null}
         {action?.prompt === 'menu' ? (
           <Menu title={action.agent.name} onClose={() => setAction(null)}>
-            <AgentMenuItems
-              agent={action.agent}
-              capabilities={snapshot.capabilities}
-              onPick={(next) => setAction({ agent: action.agent, prompt: next })}
-              onResumed={() => setAction(null)}
-              onKeys={() => {
+            <ListRow
+              leading={<Face seed={action.agent.id} look={snapshot.profiles[action.agent.id]} size={22} />}
+              label="Profile"
+              onPress={() => {
                 setAction(null);
-                router.push(`/agent-keys?agent=${encodeURIComponent(action.agent.id)}`);
+                openProfile(action.agent.id);
               }}
             />
+            {canManage(action.agent, snapshot.capabilities) ? (
+              <AgentMenuItems
+                agent={action.agent}
+                capabilities={snapshot.capabilities}
+                onPick={(next) => setAction({ agent: action.agent, prompt: next })}
+                onResumed={() => setAction(null)}
+                onKeys={() => {
+                  setAction(null);
+                  router.push(`/agent-keys?agent=${encodeURIComponent(action.agent.id)}`);
+                }}
+              />
+            ) : null}
           </Menu>
         ) : action ? (
           <AgentPrompts agent={action.agent} prompt={action.prompt} onClose={() => setAction(null)} />
@@ -214,23 +246,63 @@ function BridgeTitle({ title, color, phase }: { title: string; color?: ColorValu
 
 function AgentHeader({
   group,
+  look,
   canTopic,
   onNewTopic,
   onManage,
+  onProfile,
 }: {
   group: AgentGroup;
+  look: AgentProfile | undefined;
   canTopic: boolean;
   onNewTopic: () => void;
   onManage: (() => void) | undefined;
+  onProfile: () => void;
 }) {
   const paused = group.agent.status === 'paused';
   const unread = group.conversations.reduce((sum, row) => sum + row.unread, 0);
+  const lastAt = group.conversations.reduce((at, row) => Math.max(at, row.lastAt ?? row.createdAt ?? 0), 0);
+  const repliedAt = group.conversations.reduce((at, row) => Math.max(at, row.repliedAt ?? 0), 0);
+  const asleep = useAsleep(lastAt > 0 ? lastAt : undefined, group.conversations.some((row) => row.activity !== null));
+  const large = look?.listStyle === 'large';
+  const newest = group.conversations.reduce<ConversationRow | null>(
+    (best, row) => (best === null || (row.lastAt ?? 0) > (best.lastAt ?? 0) ? row : best),
+    null,
+  );
   return (
-    <XStack items="center" gap="$2" pl="$4" pr="$2" py="$2" minH={48} borderBottomWidth={LINE} borderColor="$color5">
-      <Face seed={group.agent.id} />
-      <Text flex={1} fontSize="$2" fontWeight="700" color="$color11" numberOfLines={1}>
-        {group.agent.name}
-      </Text>
+    <XStack
+      items="center"
+      gap={large ? '$2.5' : '$2'}
+      pl="$4"
+      pr="$2"
+      py="$2"
+      minH={48}
+      borderBottomWidth={LINE}
+      borderColor="$color5"
+    >
+      <FaceButton name={group.agent.name} headroom={large ? headroom(look, '$2') : 0} onPress={onProfile}>
+        <Face
+          seed={group.agent.id}
+          look={look}
+          size={large ? LARGE_FACE : undefined}
+          asleep={asleep}
+          hopAt={repliedAt > 0 ? repliedAt : undefined}
+        />
+      </FaceButton>
+      {large ? (
+        <YStack flex={1} gap="$1">
+          <Text fontWeight="600" numberOfLines={1}>
+            {group.agent.name}
+          </Text>
+          <Text fontSize="$2" color="$color11" numberOfLines={1}>
+            {newest?.preview || 'No messages yet'}
+          </Text>
+        </YStack>
+      ) : (
+        <Text flex={1} fontSize="$2" fontWeight="700" color="$color11" numberOfLines={1}>
+          {group.agent.name}
+        </Text>
+      )}
       {unread > 0 ? <Badge count={unread} /> : null}
       {paused ? <PausedLabel /> : null}
       {canTopic && !paused ? (
@@ -255,15 +327,57 @@ function PausedLabel() {
   );
 }
 
+function FaceButton({
+  name,
+  headroom = 0,
+  onPress,
+  children,
+}: {
+  name: string;
+  headroom?: number;
+  onPress: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <YStack role="button" aria-label={`${name} profile`} pt={headroom} hitSlop={8} pressStyle={{ opacity: 0.7 }} onPress={onPress}>
+      {children}
+    </YStack>
+  );
+}
+
 // A row inside its agent's card, or a bubble of its own; a long press opens the agent's actions.
-function Row({ row, grouped, onPress, onManage }: { row: ConversationRow; grouped: boolean; onPress: () => void; onManage: (() => void) | undefined }) {
+function Row({
+  row,
+  grouped,
+  look,
+  onPress,
+  onManage,
+  onProfile,
+}: {
+  row: ConversationRow;
+  grouped: boolean;
+  look?: AgentProfile;
+  onPress: () => void;
+  onManage: (() => void) | undefined;
+  onProfile?: () => void;
+}) {
   const paused = row.agent?.status === 'paused';
   const busy = row.activity !== null && !paused;
   const preview = busy && row.activity ? activityLabel(row.activity) : row.preview;
-  const body = (
+  const asleep = useAsleep(grouped ? undefined : (row.lastAt ?? row.createdAt), row.activity !== null);
+  const large = !grouped && look?.listStyle === 'large';
+  const face = <Face seed={row.agentId} look={look} size={large ? LARGE_FACE : undefined} asleep={asleep} hopAt={row.repliedAt} />;
+  const avatar = grouped ? null : onProfile ? (
+    <FaceButton name={row.agent?.name ?? row.title} headroom={large ? headroom(look, '$3') : 0} onPress={onProfile}>
+      {face}
+    </FaceButton>
+  ) : (
+    face
+  );
+  const lines = (
     <>
       <XStack items="center" gap="$2">
-        {grouped ? null : <Face seed={row.agentId} />}
+        {large ? null : avatar}
         {busy ? <ThinkingDot /> : null}
         {row.topic ? (
           <Text fontWeight="600" color="$color10">
@@ -288,6 +402,14 @@ function Row({ row, grouped, onPress, onManage }: { row: ConversationRow; groupe
         {row.unread > 0 ? <Badge count={row.unread} /> : null}
       </XStack>
     </>
+  );
+  const body = large ? (
+    <XStack items="center" gap="$2.5">
+      {avatar}
+      <YStack flex={1}>{lines}</YStack>
+    </XStack>
+  ) : (
+    lines
   );
   if (grouped) {
     return (

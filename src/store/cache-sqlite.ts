@@ -1,7 +1,7 @@
 import { openDatabaseSync, type SQLiteDatabase } from 'expo-sqlite';
 import type { Agent, Conversation } from '../protocol/index.ts';
 import { trimMessages, type CachedConversation, type CachedMeta, type CachedPairing, type ReadMarks, type StoreCache } from './cache.ts';
-import type { BridgeHello, ChatEntry, OpenApproval, OpenQuestion, StoredElement } from './types.ts';
+import type { AgentProfile, BridgeHello, ChatEntry, OpenApproval, OpenQuestion, StoredElement } from './types.ts';
 
 const DB_NAME = 'wizzle-cache.db';
 const WRITE_DELAY_MS = 300;
@@ -55,12 +55,14 @@ export class SqliteCache implements StoreCache {
       const meta: CachedMeta = { hello: null, agents: [], catalog: [] };
       let elements: StoredElement[] = [];
       let read: ReadMarks | null = null;
+      let profiles: Record<string, unknown> = {};
       for (const row of this.db.getAllSync<MetaRow>('SELECT key, value FROM meta WHERE pairing = ?', pairingId)) {
         if (row.key === 'hello') meta.hello = (parseJson(row.value) as BridgeHello | null) ?? null;
         else if (row.key === 'agents') meta.agents = list<Agent>(row.value);
         else if (row.key === 'catalog') meta.catalog = list<Conversation>(row.value);
         else if (row.key === 'elements') elements = list<StoredElement>(row.value);
         else if (row.key === 'read') read = (parseJson(row.value) as ReadMarks | null) ?? null;
+        else if (row.key === 'profiles') profiles = (parseJson(row.value) as Record<string, unknown> | null) ?? {};
       }
       const conversations = new Map<string, CachedConversation>();
       const rows = this.db.getAllSync<ConversationRow>('SELECT conv, messages, questions, approvals FROM conversations WHERE pairing = ?', pairingId);
@@ -71,7 +73,7 @@ export class SqliteCache implements StoreCache {
           approvals: list<OpenApproval>(row.approvals),
         });
       }
-      return { ...meta, conversations, elements, read };
+      return { ...meta, conversations, elements, read, profiles };
     } catch (error) {
       console.warn('wizzle: cache load failed', error);
       return null;
@@ -100,6 +102,12 @@ export class SqliteCache implements StoreCache {
   saveRead(pairingId: string, read: ReadMarks): void {
     this.write(() => {
       this.db?.runSync('INSERT OR REPLACE INTO meta (pairing, key, value) VALUES (?, ?, ?)', pairingId, 'read', JSON.stringify(read));
+    });
+  }
+
+  saveProfiles(pairingId: string, profiles: Record<string, AgentProfile>): void {
+    this.write(() => {
+      this.db?.runSync('INSERT OR REPLACE INTO meta (pairing, key, value) VALUES (?, ?, ?)', pairingId, 'profiles', JSON.stringify(profiles));
     });
   }
 

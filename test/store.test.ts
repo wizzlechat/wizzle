@@ -16,7 +16,7 @@ import type { FileStore } from '../src/files/types.ts';
 import { RelayClient } from '../src/relay/client.ts';
 import type { CachedConversation, CachedMeta, CachedPairing, ReadMarks, StoreCache } from '../src/store/cache.ts';
 import { WizzleStore, attachmentFailure, plainMessage, type StoreLink } from '../src/store/store.ts';
-import type { Attachment, ChatEntry, SendFailure, StoredElement } from '../src/store/types.ts';
+import type { AgentProfile, Attachment, ChatEntry, SendFailure, StoredElement } from '../src/store/types.ts';
 import { FakeBridge, FakeRelay, newPairing, phoneKeys, phoneSecrets, silentLog, until } from './fake-relay.ts';
 
 const CONV = 'wizzle:agent-1';
@@ -28,6 +28,7 @@ class FakeCache implements StoreCache {
   readonly rows = new Map<string, Map<string, CachedConversation>>();
   readonly elements = new Map<string, StoredElement[]>();
   readonly read = new Map<string, ReadMarks>();
+  readonly profiles = new Map<string, Record<string, AgentProfile>>();
   flushed = 0;
 
   load(pairingId: string): CachedPairing | null {
@@ -35,8 +36,18 @@ class FakeCache implements StoreCache {
     const rows = this.rows.get(pairingId);
     const elements = this.elements.get(pairingId);
     const read = this.read.get(pairingId);
-    if (!meta && !rows && !elements && !read) return null;
-    return { hello: null, agents: [], catalog: [], ...meta, conversations: new Map(rows ?? []), elements: elements ?? [], read: read ?? null };
+    const profiles = this.profiles.get(pairingId);
+    if (!meta && !rows && !elements && !read && !profiles) return null;
+    return {
+      hello: null,
+      agents: [],
+      catalog: [],
+      ...meta,
+      conversations: new Map(rows ?? []),
+      elements: elements ?? [],
+      read: read ?? null,
+      profiles: profiles ?? {},
+    };
   }
   saveMeta(pairingId: string, meta: CachedMeta): void {
     this.meta.set(pairingId, meta);
@@ -52,6 +63,9 @@ class FakeCache implements StoreCache {
   saveRead(pairingId: string, read: ReadMarks): void {
     this.read.set(pairingId, read);
   }
+  saveProfiles(pairingId: string, profiles: Record<string, AgentProfile>): void {
+    this.profiles.set(pairingId, profiles);
+  }
   forgetConversation(pairingId: string, conv: string): void {
     this.rows.get(pairingId)?.delete(conv);
   }
@@ -59,6 +73,7 @@ class FakeCache implements StoreCache {
     this.meta.delete(pairingId);
     this.rows.delete(pairingId);
     this.read.delete(pairingId);
+    this.profiles.delete(pairingId);
   }
   flush(): void {
     this.flushed += 1;
@@ -571,6 +586,54 @@ function failureOf(promise: Promise<string>): Promise<SendFailure | null> {
     (failure: SendFailure) => failure,
   );
 }
+
+test('a nickname and a look stay on the phone, show wherever the agent name does and come back on hydrate', async () => {
+  const cache = new FakeCache();
+  const w = await wired({ cache });
+  w.store.hydrate(PAIRING);
+  withTopics(w.bridge);
+  await until(() => w.store.getSnapshot().conversations.length === 4);
+  const sent = w.bridge.received.length;
+
+  w.store.setProfile('agent-1', { nickname: '  Biscuit ', hue: 200, eyes: 'wide', accessory: 'sprout', listStyle: 'large' });
+  const snapshot = w.store.getSnapshot();
+  assert.deepEqual(snapshot.profiles['agent-1'], { nickname: 'Biscuit', hue: 200, eyes: 'wide', accessory: 'sprout', listStyle: 'large' });
+  assert.deepEqual(
+    snapshot.agents.find((agent) => agent.id === 'agent-1'),
+    { id: 'agent-1', name: 'Biscuit', hostName: 'main', status: 'idle' },
+  );
+  const titles = Object.fromEntries(snapshot.conversations.map((row) => [row.id, [row.title, row.agent?.name]]));
+  assert.deepEqual(titles[CONV], ['Biscuit', 'Biscuit']);
+  assert.deepEqual(titles[TOPIC_A], ['Ops review', 'Biscuit']);
+  assert.equal(snapshot.agentGroups[0]?.agent.name, 'Biscuit');
+  assert.deepEqual(cache.profiles.get(PAIRING), { 'agent-1': snapshot.profiles['agent-1'] });
+
+  w.store.hydrate(PAIRING);
+  assert.equal(w.store.getSnapshot().agents.find((agent) => agent.id === 'agent-1')?.name, 'Biscuit');
+
+  w.store.setProfile('agent-1', { nickname: '', hue: 200 });
+  const cleared = w.store.getSnapshot();
+  assert.deepEqual(cleared.profiles['agent-1'], { hue: 200 });
+  assert.equal(cleared.conversations.find((row) => row.id === CONV)?.title, 'main');
+  assert.equal(cleared.agents.find((agent) => agent.id === 'agent-1')?.hostName, undefined);
+
+  w.bridge.send({ t: 'agent_deleted', agentId: 'agent-1' });
+  await until(() => w.store.getSnapshot().profiles['agent-1'] === undefined);
+  assert.deepEqual(cache.profiles.get(PAIRING), {});
+  assert.equal(w.bridge.received.length, sent);
+  w.stop();
+});
+
+test('a row carries the newest agent message the phone holds', async () => {
+  const w = await wired();
+  catalog(w.bridge);
+  w.store.open(CONV);
+  w.bridge.send({ t: 'message', message: message('a1', 2000, 'first') });
+  w.bridge.send({ t: 'message', message: message('u1', 3000, 'mine', 'user') });
+  await until(() => w.store.conversation(CONV).messages.length === 2);
+  assert.equal(w.store.getSnapshot().conversations.find((row) => row.id === CONV)?.repliedAt, 2000);
+  w.stop();
+});
 
 test('the catalog groups topics under their agent, default first and System last', async () => {
   const w = await wired();

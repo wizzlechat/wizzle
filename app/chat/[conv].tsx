@@ -2,7 +2,7 @@ import { setStringAsync } from 'expo-clipboard';
 import { GlassView, isGlassEffectAPIAvailable } from 'expo-glass-effect';
 import { Stack, useIsFocused, useLocalSearchParams, useRouter } from 'expo-router';
 import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { FlatList, StyleSheet, type ScrollViewProps } from 'react-native';
+import { Animated, Easing, FlatList, StyleSheet, View, type ScrollViewProps } from 'react-native';
 import { KeyboardChatScrollView, KeyboardGestureArea } from 'react-native-keyboard-controller';
 import { useSharedValue, type SharedValue } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -11,9 +11,9 @@ import { pickFiles, pickPhotos, type Picked } from '../../src/files/pick';
 import type { Agent, ApprovalDecision, Capabilities } from '../../src/protocol/index';
 import { useConnection } from '../../src/relay/connection';
 import { MAX_ATTACHMENTS, SYSTEM_CONV, attachmentFailure, store, useConversation, useStore } from '../../src/store';
-import type { Attachment, ChatEntry, ConversationRow, Notice, OpenApproval, OpenQuestion } from '../../src/store/types';
+import type { AgentProfile, Attachment, ChatEntry, ConversationRow, Notice, OpenApproval, OpenQuestion } from '../../src/store/types';
 import { FileView } from '../../src/ui/attachments';
-import { faceColor } from '../../src/ui/face';
+import { Face, faceColor } from '../../src/ui/face';
 import { ArrowUp, Cards, ChatPlus, Check, Close, Copy, Dots, File, Mic, Pencil, Photo, Plus, Speaker, Stop, Trash } from '../../src/ui/icons';
 import { useDictation } from '../../src/ui/dictation';
 import { KeyboardRider } from '../../src/ui/keyboard';
@@ -25,6 +25,7 @@ import { ConnectionBanner } from '../../src/ui/status';
 import { ThinkingRow } from '../../src/ui/thinking';
 import { ElementLink } from '../../src/ui/element';
 import { ClearChat, DeleteTopic, Menu, RenameTopic, TitlePrompt } from '../../src/ui/topics';
+import { chatTitle, decodeId } from '../../src/ui/titles';
 import { fileSize, shortTime } from '../../src/ui/time';
 
 const DECISION: Record<ApprovalDecision, string> = { allow: 'Allow', deny: 'Deny', allow_always: 'Always allow' };
@@ -73,6 +74,8 @@ export default function Chat() {
   const row = snapshot.conversations.find((item) => item.id === conv);
   const agentName = row?.agent?.name ?? row?.title ?? 'agent';
   const seed = row?.agentId ?? conv;
+  const look = snapshot.profiles[seed];
+  const nameColor = faceColor(seed, look?.hue);
   const readOnly = conv === SYSTEM_CONV;
   const canTopic = snapshot.capabilities?.topics === true && !readOnly && row !== undefined;
   const canClear = snapshot.capabilities?.clearSession === true && !readOnly && row !== undefined;
@@ -81,7 +84,7 @@ export default function Chat() {
   const canAttach = snapshot.capabilities?.files === true && !readOnly;
   const paused = agent?.status === 'paused';
   const composing = !readOnly && !(paused && agent);
-  const title = row ? (row.topic ? `${agentName} / ${row.title}` : row.title) : readOnly ? 'System' : conv;
+  const title = chatTitle(snapshot, conv);
   // The catalog dropped this conversation, so it was deleted here or by another client.
   const gone = snapshot.conversations.length > 0 && row === undefined && !readOnly;
   const system = useConversation(SYSTEM_CONV);
@@ -217,7 +220,7 @@ export default function Chat() {
             ListFooterComponent={state.loading ? <Spinner size="small" py="$3" /> : null}
             ListEmptyComponent={<Empty loading={state.loading} readOnly={readOnly} />}
             renderItem={({ item }) => (
-              <Entry entry={item} agentName={agentName} seed={seed} conv={conv} agent={agent} />
+              <Entry entry={item} agentName={agentName} nameColor={nameColor} conv={conv} agent={agent} />
             )}
           />
           {/* Cards, activity and the input bar ride the keyboard by transform, so they track it frame for frame.
@@ -235,7 +238,7 @@ export default function Chat() {
             {state.approvals.map((open) => (
               <ApprovalCard key={open.approval.approvalId} open={open} conv={conv} />
             ))}
-            <ThinkingRow activity={state.activity} seed={seed} />
+            <ThinkingRow activity={state.activity} seed={seed} look={look} />
             {readOnly ? (
               <XStack px="$4" py="$3" bg="$background" borderTopWidth={1} borderColor="$borderColor">
                 <Text fontSize="$2" color="$color11">
@@ -351,6 +354,7 @@ export default function Chat() {
           {row && prompt && prompt !== 'attach' ? (
             <TopicPrompts
               row={row}
+              look={look}
               prompt={prompt}
               setPrompt={setPrompt}
               canTopic={canTopic}
@@ -396,6 +400,7 @@ const ChatScroll = forwardRef<React.ComponentRef<typeof KeyboardChatScrollView>,
 // New topic sits here as well, so an agent with one conversation still has a way to make its first.
 function TopicPrompts({
   row,
+  look,
   prompt,
   setPrompt,
   canTopic,
@@ -403,6 +408,7 @@ function TopicPrompts({
   capabilities,
 }: {
   row: ConversationRow;
+  look: AgentProfile | undefined;
   prompt: Prompt;
   setPrompt: (next: Prompt) => void;
   canTopic: boolean;
@@ -417,6 +423,14 @@ function TopicPrompts({
   if (prompt === 'menu') {
     return (
       <Menu title={row.title} onClose={() => setPrompt(null)}>
+        <ListRow
+          leading={<Face seed={row.agentId} look={look} size={22} />}
+          label="Profile"
+          onPress={() => {
+            setPrompt(null);
+            router.push(`/profile?agent=${encodeURIComponent(row.agentId)}`);
+          }}
+        />
         <ListRow
           icon={Cards}
           label="Elements"
@@ -467,26 +481,17 @@ function TopicPrompts({
   return null;
 }
 
-function decodeId(raw: string | undefined): string {
-  if (!raw) return '';
-  try {
-    return decodeURIComponent(raw);
-  } catch {
-    return raw;
-  }
-}
-
 // Your own messages sit on the right in a bubble with the time under it; the rest keep a name and time above.
 function Entry({
   entry,
   agentName,
-  seed,
+  nameColor,
   conv,
   agent,
 }: {
   entry: ChatEntry;
   agentName: string;
-  seed: string;
+  nameColor: string;
   conv: string;
   agent: Agent | null;
 }) {
@@ -541,7 +546,7 @@ function Entry({
               fontSize="$1"
               fontWeight="700"
               color={entry.role === 'system' ? '$color11' : undefined}
-              style={entry.role === 'system' ? undefined : { color: faceColor(seed) }}
+              style={entry.role === 'system' ? undefined : { color: nameColor }}
             >
               {entry.role === 'system' ? 'system' : agentName}
             </Text>
@@ -612,13 +617,44 @@ function MessageActions({ text }: { text: string }) {
           setCopied(true);
         }}
       >
-        {copied ? <Check size={18} color={ink} /> : <Copy size={18} color={ink} />}
+        <CopyMark copied={copied} color={ink} />
       </XStack>
       <XStack aria-label="Read aloud" hitSlop={8}>
         <Speaker size={18} color={ink} />
       </XStack>
       <MessageMore text={text} color={ink} />
     </XStack>
+  );
+}
+
+// The copy icon shrinks away as the check springs in with a little overshoot, and the reverse when it times out.
+function CopyMark({ copied, color }: { copied: boolean; color: string }) {
+  const swap = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const animation = copied
+      ? Animated.spring(swap, { toValue: 1, friction: 5, tension: 160, useNativeDriver: true })
+      : Animated.timing(swap, { toValue: 0, duration: 180, easing: Easing.out(Easing.quad), useNativeDriver: true });
+    animation.start();
+    return () => animation.stop();
+  }, [copied, swap]);
+  const away = {
+    opacity: swap.interpolate({ inputRange: [0, 0.6], outputRange: [1, 0], extrapolate: 'clamp' }),
+    transform: [{ scale: swap.interpolate({ inputRange: [0, 1], outputRange: [1, 0.4], extrapolate: 'clamp' }) }],
+  };
+  const into = {
+    position: 'absolute' as const,
+    opacity: swap.interpolate({ inputRange: [0.2, 1], outputRange: [0, 1], extrapolate: 'clamp' }),
+    transform: [{ scale: swap.interpolate({ inputRange: [0, 1], outputRange: [0.4, 1] }) }],
+  };
+  return (
+    <View style={{ width: 18, height: 18 }}>
+      <Animated.View style={away}>
+        <Copy size={18} color={color} />
+      </Animated.View>
+      <Animated.View style={into}>
+        <Check size={18} color={color} />
+      </Animated.View>
+    </View>
   );
 }
 

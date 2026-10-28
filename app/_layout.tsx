@@ -6,9 +6,10 @@ import { KeyboardProvider } from 'react-native-keyboard-controller';
 import { TamaguiProvider, useTheme } from 'tamagui';
 import { startPush } from '../src/push';
 import { connection } from '../src/relay/connection';
-import '../src/store';
+import { store } from '../src/store';
 import { useAppearance } from '../src/ui/appearance';
 import { useAppFonts } from '../src/ui/fonts';
+import { chatTitle, decodeId, profileTitle } from '../src/ui/titles';
 import { tamaguiConfig } from '../tamagui.config';
 
 // useColorScheme also reports null or unspecified, and treating those as light flips every screen
@@ -75,8 +76,19 @@ function RootStack({ scheme }: { scheme: 'light' | 'dark' }) {
           },
         }}
       >
-        {/* An element opens over whatever linked to it. */}
+        {/* An element and an agent's profile open over whatever linked to them. */}
         <Stack.Screen name="element" options={{ presentation: 'modal' }} />
+        <Stack.Screen
+          name="profile"
+          options={({ route }) => ({
+            presentation: 'modal',
+            title: profileTitle(store.getSnapshot(), (route.params as { agent?: string } | undefined)?.agent ?? ''),
+          })}
+        />
+        <Stack.Screen
+          name="chat/[conv]"
+          options={({ route }) => ({ title: chatTitle(store.getSnapshot(), decodeId((route.params as { conv?: string } | undefined)?.conv)) })}
+        />
       </Stack>
     </ThemeProvider>
   );

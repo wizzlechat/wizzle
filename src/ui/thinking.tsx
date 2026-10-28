@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Animated, Easing, View } from 'react-native';
 import { useTheme } from 'tamagui';
 import type { Activity } from '../protocol/index.ts';
+import type { AgentProfile } from '../store/types.ts';
 import { Face } from './face.tsx';
 import { activityLabel } from './status.tsx';
 
@@ -38,7 +39,7 @@ function mix(from: string, to: string, amount: number): string {
 }
 
 // The agent's face and its activity above the input; it rises from behind the input and drops back when done.
-export function ThinkingRow({ activity, seed }: { activity: Activity | null; seed: string }) {
+export function ThinkingRow({ activity, seed, look }: { activity: Activity | null; seed: string; look?: AgentProfile }) {
   const active = activity !== null;
   const current = activity ? activityLabel(activity) : null;
   const [label, setLabel] = useState<string | null>(null);
@@ -86,7 +87,7 @@ export function ThinkingRow({ activity, seed }: { activity: Activity | null; see
       {label !== null ? (
         <View style={{ height: ROW_HEIGHT, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 18 }}>
           <Animated.View style={faceStyle}>
-            <Face seed={seed} thinking />
+            <Face seed={seed} look={look} thinking />
           </Animated.View>
           <Animated.View style={{ flexShrink: 1, overflow: 'hidden', opacity: textOpacity }}>
             <Shimmer text={label} />

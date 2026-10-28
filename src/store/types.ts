@@ -71,13 +71,26 @@ export type ConversationState = {
   requested: boolean;
 };
 
+export type EyeStyle = 'pill' | 'dot' | 'wide' | 'visor';
+export type Accessory = 'antenna' | 'sprout' | 'bow' | 'crown' | 'halo';
+// Compact puts a small face beside the name; large puts a bigger one beside the name and the last message.
+export type ListStyle = 'compact' | 'large';
+
+// The phone's own nickname and look for an agent; the host never sees either.
+export type AgentProfile = { nickname?: string; hue?: number; eyes?: EyeStyle; accessory?: Accessory; listStyle?: ListStyle };
+
+// hostName is set when a nickname shows in place of the name the host gave the agent.
+export type AgentView = Agent & { hostName?: string };
+
 export type ConversationRow = Conversation & {
-  agent: Agent | null;
+  agent: AgentView | null;
   preview: string;
   activity: Activity | null;
   questions: number;
   unread: number;
   topic: boolean;
+  // The newest agent message this phone holds.
+  repliedAt?: number;
 };
 
 // One create_agent, from the tap until its conversation exists or the host refuses.
@@ -92,12 +105,13 @@ export type CreateState = {
 };
 
 // One agent with its default conversation and its topics, in list order.
-export type AgentGroup = { agent: Agent; conversations: ConversationRow[] };
+export type AgentGroup = { agent: AgentView; conversations: ConversationRow[] };
 
 export type StoreSnapshot = {
   hello: BridgeHello | null;
   capabilities: Capabilities | null;
-  agents: Agent[];
+  agents: AgentView[];
+  profiles: Record<string, AgentProfile>;
   conversations: ConversationRow[];
   agentGroups: AgentGroup[];
   templates: TemplateInfo[];

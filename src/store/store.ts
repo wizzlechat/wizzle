@@ -31,13 +31,18 @@ import {
 } from '../protocol/index.ts';
 import type { CachedConversation, StoreCache } from './cache.ts';
 import type {
+  Accessory,
   AgentGroup,
+  AgentProfile,
+  AgentView,
   Attachment,
   BridgeHello,
   ChatEntry,
   ConversationRow,
   ConversationState,
   CreateState,
+  EyeStyle,
+  ListStyle,
   Notice,
   OpenApproval,
   OpenQuestion,
@@ -61,6 +66,9 @@ export const MAX_NAME_CHARS = 60;
 export const MAX_PURPOSE_CHARS = 2000;
 export const MAX_ATTACHMENTS = 4;
 export const MAX_ATTACHMENT_TOTAL = 32 * 1024 * 1024;
+export const EYE_STYLES: EyeStyle[] = ['pill', 'dot', 'wide', 'visor'];
+export const ACCESSORIES: Accessory[] = ['antenna', 'sprout', 'bow', 'crown', 'halo'];
+export const LIST_STYLES: ListStyle[] = ['compact', 'large'];
 
 export type PacketListener = (packet: DecodedPacket) => void;
 
@@ -291,6 +299,24 @@ function toAgent(value: unknown): Agent | null {
     ...(description !== null && { description }),
     ...(model !== null && { model }),
   };
+}
+
+// Anything unknown or out of range is dropped, so a row another build wrote never breaks a face.
+function toProfile(value: unknown): AgentProfile | null {
+  if (!isRecord(value)) return null;
+  const nickname = str(value['nickname'])?.trim().slice(0, MAX_NAME_CHARS) ?? '';
+  const hue = num(value['hue']);
+  const eyes = EYE_STYLES.find((one) => one === value['eyes']);
+  const accessory = ACCESSORIES.find((one) => one === value['accessory']);
+  const listStyle = LIST_STYLES.find((one) => one === value['listStyle']);
+  const profile: AgentProfile = {
+    ...(nickname.length > 0 && { nickname }),
+    ...(hue !== null && hue >= 0 && hue < 360 && { hue }),
+    ...(eyes !== undefined && { eyes }),
+    ...(accessory !== undefined && { accessory }),
+    ...(listStyle !== undefined && { listStyle }),
+  };
+  return Object.keys(profile).length > 0 ? profile : null;
 }
 
 function toConversation(value: unknown): Conversation | null {
@@ -532,6 +558,16 @@ function newestAgentAt(messages: ChatEntry[]): number | undefined {
   return at;
 }
 
+// Kept per transcript array for the same reason as the unread counts below.
+const repliedTimes = new WeakMap<ChatEntry[], number | undefined>();
+
+function repliedAtOf(messages: ChatEntry[]): number | undefined {
+  if (repliedTimes.has(messages)) return repliedTimes.get(messages);
+  const at = newestAgentAt(messages);
+  repliedTimes.set(messages, at);
+  return at;
+}
+
 // A transcript array is replaced whenever it changes, so its count holds until it or the mark does.
 const unreadCounts = new WeakMap<ChatEntry[], { mark: number; count: number }>();
 
@@ -596,6 +632,7 @@ export class WizzleStore {
   private readonly elements = new Map<string, StoredElement>();
   private readonly readMarks = new Map<string, number>();
   private readFloor = 0;
+  private readonly profiles = new Map<string, AgentProfile>();
   // Sends wait their turn here, so a message never overtakes one still reading its files.
   private chain: Promise<void> = Promise.resolve();
   private queued = 0;
@@ -715,6 +752,10 @@ export class WizzleStore {
     this.hello = cached.hello;
     this.agents = cached.agents;
     this.catalog = cached.catalog;
+    for (const [agentId, raw] of Object.entries(cached.profiles)) {
+      const profile = toProfile(raw);
+      if (profile) this.profiles.set(agentId, profile);
+    }
     for (const stored of cached.elements) this.elements.set(elementKey(stored.agentId, stored.element.id), stored);
     for (const [conv, data] of cached.conversations) {
       const questions = data.questions.filter((open) => !expired(open.question.expiresAt, now));
@@ -870,6 +911,16 @@ export class WizzleStore {
     return this.create;
   }
 
+  // Only this phone sees a nickname or a look; an empty profile brings back the host's name and the face from the id.
+  setProfile(agentId: string, profile: AgentProfile): void {
+    const next = toProfile(profile);
+    if (JSON.stringify(next) === JSON.stringify(this.profiles.get(agentId) ?? null)) return;
+    if (next) this.profiles.set(agentId, next);
+    else this.profiles.delete(agentId);
+    this.persistProfiles();
+    this.changed();
+  }
+
   // Called while a chat is on screen, so what the agent sent there so far is read.
   markRead(conv: string): void {
     const newest = newestAgentAt(this.convs.get(conv)?.messages ?? []);
@@ -913,6 +964,7 @@ export class WizzleStore {
     this.elements.clear();
     this.readMarks.clear();
     this.readFloor = 0;
+    this.profiles.clear();
     this.agents = [];
     this.catalog = [];
     this.templates = [];
@@ -1055,6 +1107,10 @@ export class WizzleStore {
     }
   }
 
+  private persistProfiles(): void {
+    if (this.pairingId) this.cache?.saveProfiles(this.pairingId, Object.fromEntries(this.profiles));
+  }
+
   private persistMeta(): void {
     if (this.pairingId) this.cache?.saveMeta(this.pairingId, { hello: this.hello, agents: this.agents, catalog: this.catalog });
   }
@@ -1167,6 +1223,7 @@ export class WizzleStore {
         const agentId = str(h['agentId']);
         if (!agentId) return void this.drop();
         this.agents = this.agents.filter((a) => a.id !== agentId);
+        if (this.profiles.delete(agentId)) this.persistProfiles();
         for (const conv of this.catalog) if (conv.agentId === agentId) this.forget(conv.id);
         this.catalog = this.catalog.filter((c) => c.agentId !== agentId);
         this.settleTopics((pending) => pending.kind === 'deleteAgent' && pending.agentId === agentId, agentId);
@@ -1539,14 +1596,25 @@ export class WizzleStore {
     this.dropped += 1;
   }
 
-  private row(conv: Conversation): ConversationRow {
+  // A nickname replaces the host's name everywhere the phone shows one.
+  private shown(agent: Agent): AgentView {
+    const nickname = this.profiles.get(agent.id)?.nickname;
+    return nickname && nickname !== agent.name ? { ...agent, name: nickname, hostName: agent.name } : agent;
+  }
+
+  private row(conv: Conversation, agents: AgentView[]): ConversationRow {
     const state = this.convs.get(conv.id);
     const last = state?.messages[state.messages.length - 1];
     const lastAt = Math.max(conv.lastAt ?? 0, last?.at ?? 0);
+    const agent = agents.find((a) => a.id === conv.agentId) ?? null;
+    const repliedAt = state ? repliedAtOf(state.messages) : undefined;
     return {
       ...conv,
+      // The default conversation is titled with the agent's name, so a nickname retitles it too.
+      ...(agent?.hostName !== undefined && conv.topic !== true && { title: agent.name }),
       ...(lastAt > 0 && { lastAt }),
-      agent: this.agents.find((a) => a.id === conv.agentId) ?? null,
+      ...(repliedAt !== undefined && { repliedAt }),
+      agent,
       preview: last ? previewOf(last) : '',
       activity: state?.activity ?? null,
       questions: (state?.questions.length ?? 0) + (state?.approvals.length ?? 0),
@@ -1556,7 +1624,7 @@ export class WizzleStore {
   }
 
   // The default conversation leads its agent, topics follow it newest first, System sits last.
-  private group(rows: ConversationRow[]): AgentGroup[] {
+  private group(rows: ConversationRow[], agents: AgentView[]): AgentGroup[] {
     const byAgent = new Map<string, ConversationRow[]>();
     for (const row of rows) {
       const list = byAgent.get(row.agentId);
@@ -1565,7 +1633,7 @@ export class WizzleStore {
     }
     const groups: AgentGroup[] = [];
     for (const [agentId, list] of byAgent) {
-      const agent = this.agents.find((a) => a.id === agentId) ?? { id: agentId, name: list[0]?.title ?? agentId, status: 'idle' as AgentStatus };
+      const agent = agents.find((a) => a.id === agentId) ?? { id: agentId, name: list[0]?.title ?? agentId, status: 'idle' as AgentStatus };
       groups.push({ agent, conversations: list.slice().sort((a, b) => Number(a.topic) - Number(b.topic) || (b.lastAt ?? 0) - (a.lastAt ?? 0)) });
     }
     const newest = (group: AgentGroup): number => group.conversations.reduce((at, conv) => Math.max(at, conv.lastAt ?? 0), 0);
@@ -1574,13 +1642,15 @@ export class WizzleStore {
   }
 
   private compute(): StoreSnapshot {
-    const conversations = this.catalog.map((conv) => this.row(conv)).sort((a, b) => (b.lastAt ?? 0) - (a.lastAt ?? 0));
+    const agents = this.agents.map((agent) => this.shown(agent));
+    const conversations = this.catalog.map((conv) => this.row(conv, agents)).sort((a, b) => (b.lastAt ?? 0) - (a.lastAt ?? 0));
     return {
       hello: this.hello,
       capabilities: this.hello?.capabilities ?? null,
-      agents: this.agents,
+      agents,
+      profiles: Object.fromEntries(this.profiles),
       conversations,
-      agentGroups: this.group(conversations),
+      agentGroups: this.group(conversations, agents),
       templates: this.templates,
       secrets: this.secrets,
       agentSecrets: this.agentSecrets,
