@@ -16,6 +16,10 @@ CREATE TABLE IF NOT EXISTS conversations (
 
 type MetaRow = { key: string; value: string };
 type ConversationRow = { conv: string; messages: string; questions: string; approvals: string };
+type Write = { pairingId: string; run: (db: SQLiteDatabase) => void };
+
+const META_SQL = 'INSERT OR REPLACE INTO meta (pairing, key, value) VALUES (?, ?, ?)';
+const CONVERSATION_SQL = 'INSERT OR REPLACE INTO conversations (pairing, conv, messages, questions, approvals) VALUES (?, ?, ?, ?, ?)';
 
 function parseJson(text: string): unknown {
   try {
@@ -30,10 +34,10 @@ function list<T>(text: string): T[] {
   return Array.isArray(value) ? (value as T[]) : [];
 }
 
-// Rows are JSON blobs per conversation; a write replaces the whole row, so writes are batched on a timer.
+// Rows are JSON blobs; a write replaces a whole row, so writes wait on a timer and the newest per row goes.
 export class SqliteCache implements StoreCache {
   private readonly db: SQLiteDatabase | null;
-  private readonly pending = new Map<string, { pairingId: string; conv: string; data: CachedConversation }>();
+  private readonly pending = new Map<string, Write>();
   private timer: ReturnType<typeof setTimeout> | null = null;
 
   constructor() {
@@ -81,44 +85,31 @@ export class SqliteCache implements StoreCache {
   }
 
   saveMeta(pairingId: string, meta: CachedMeta): void {
-    this.write(() => {
-      const entries: [string, unknown][] = [
-        ['hello', meta.hello],
-        ['agents', meta.agents],
-        ['catalog', meta.catalog],
-      ];
-      for (const [key, value] of entries) {
-        this.db?.runSync('INSERT OR REPLACE INTO meta (pairing, key, value) VALUES (?, ?, ?)', pairingId, key, JSON.stringify(value));
-      }
-    });
+    this.queueMeta(pairingId, 'hello', meta.hello);
+    this.queueMeta(pairingId, 'agents', meta.agents);
+    this.queueMeta(pairingId, 'catalog', meta.catalog);
   }
 
   saveElements(pairingId: string, elements: StoredElement[]): void {
-    this.write(() => {
-      this.db?.runSync('INSERT OR REPLACE INTO meta (pairing, key, value) VALUES (?, ?, ?)', pairingId, 'elements', JSON.stringify(elements));
-    });
+    this.queueMeta(pairingId, 'elements', elements);
   }
 
   saveRead(pairingId: string, read: ReadMarks): void {
-    this.write(() => {
-      this.db?.runSync('INSERT OR REPLACE INTO meta (pairing, key, value) VALUES (?, ?, ?)', pairingId, 'read', JSON.stringify(read));
-    });
+    this.queueMeta(pairingId, 'read', read);
   }
 
   saveProfiles(pairingId: string, profiles: Record<string, AgentProfile>): void {
-    this.write(() => {
-      this.db?.runSync('INSERT OR REPLACE INTO meta (pairing, key, value) VALUES (?, ?, ?)', pairingId, 'profiles', JSON.stringify(profiles));
-    });
+    this.queueMeta(pairingId, 'profiles', profiles);
   }
 
   saveConversation(pairingId: string, conv: string, data: CachedConversation): void {
-    if (!this.db) return;
-    this.pending.set(`${pairingId}\0${conv}`, { pairingId, conv, data });
-    if (this.timer === null) this.timer = setTimeout(() => this.flush(), WRITE_DELAY_MS);
+    this.queue(`${pairingId}\0conv\0${conv}`, pairingId, (db) =>
+      db.runSync(CONVERSATION_SQL, pairingId, conv, JSON.stringify(trimMessages(data.messages)), JSON.stringify(data.questions), JSON.stringify(data.approvals)),
+    );
   }
 
   forgetConversation(pairingId: string, conv: string): void {
-    this.pending.delete(`${pairingId}\0${conv}`);
+    this.pending.delete(`${pairingId}\0conv\0${conv}`);
     this.write(() => this.db?.runSync('DELETE FROM conversations WHERE pairing = ? AND conv = ?', pairingId, conv));
   }
 
@@ -134,22 +125,23 @@ export class SqliteCache implements StoreCache {
     if (this.timer !== null) clearTimeout(this.timer);
     this.timer = null;
     if (this.pending.size === 0) return;
-    const rows = [...this.pending.values()];
+    const writes = [...this.pending.values()];
     this.pending.clear();
     this.write(() => {
       this.db?.withTransactionSync(() => {
-        for (const { pairingId, conv, data } of rows) {
-          this.db?.runSync(
-            'INSERT OR REPLACE INTO conversations (pairing, conv, messages, questions, approvals) VALUES (?, ?, ?, ?, ?)',
-            pairingId,
-            conv,
-            JSON.stringify(trimMessages(data.messages)),
-            JSON.stringify(data.questions),
-            JSON.stringify(data.approvals),
-          );
-        }
+        for (const { run } of writes) if (this.db) run(this.db);
       });
     });
+  }
+
+  private queueMeta(pairingId: string, key: string, value: unknown): void {
+    this.queue(`${pairingId}\0meta\0${key}`, pairingId, (db) => db.runSync(META_SQL, pairingId, key, JSON.stringify(value)));
+  }
+
+  private queue(key: string, pairingId: string, run: (db: SQLiteDatabase) => void): void {
+    if (!this.db) return;
+    this.pending.set(key, { pairingId, run });
+    if (this.timer === null) this.timer = setTimeout(() => this.flush(), WRITE_DELAY_MS);
   }
 
   // A cache write that fails loses nothing the bridge cannot send again, so it only logs.
