@@ -1,12 +1,15 @@
+import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import { Button, Spinner, Text, XStack, YStack } from 'tamagui';
 import type { Agent, Capabilities } from '../protocol/index.ts';
 import { store } from '../store/index.ts';
-import type { SendFailure } from '../store/types.ts';
+import type { AgentProfile, SendFailure } from '../store/types.ts';
 import { Field, Pill } from './controls.tsx';
+import { Face } from './face.tsx';
 import { Key, Pause, Play, Restart, Trash } from './icons.tsx';
 import { ListRow } from './list.tsx';
-import { ConfirmPrompt, Overlay } from './topics.tsx';
+import { profileHref } from './titles.ts';
+import { ConfirmPrompt, Menu, Overlay } from './topics.tsx';
 
 export type AgentPrompt = 'pause' | 'restart' | 'delete';
 
@@ -15,6 +18,54 @@ const MAX_RESTART_CHARS = 2000;
 export function canManage(agent: Agent | null | undefined, capabilities: Capabilities | null): boolean {
   if (!agent || agent.id === 'system' || !capabilities) return false;
   return capabilities.lifecycle || capabilities.deleteAgent || capabilities.keys;
+}
+
+// The menu both screens open on an agent: its profile, whatever the caller adds, then the host's actions.
+export function AgentMenu({
+  title,
+  seed,
+  agent,
+  look,
+  capabilities,
+  onPick,
+  onClose,
+  children,
+}: {
+  title: string;
+  seed: string;
+  agent: Agent | null;
+  look: AgentProfile | undefined;
+  capabilities: Capabilities | null;
+  onPick: (prompt: AgentPrompt) => void;
+  onClose: () => void;
+  children?: React.ReactNode;
+}) {
+  const router = useRouter();
+  return (
+    <Menu title={title} onClose={onClose}>
+      <ListRow
+        leading={<Face seed={seed} look={look} size={22} />}
+        label="Profile"
+        onPress={() => {
+          onClose();
+          router.push(profileHref(seed));
+        }}
+      />
+      {children}
+      {agent && canManage(agent, capabilities) ? (
+        <AgentMenuItems
+          agent={agent}
+          capabilities={capabilities}
+          onPick={onPick}
+          onResumed={onClose}
+          onKeys={() => {
+            onClose();
+            router.push(`/agent-keys?agent=${encodeURIComponent(agent.id)}`);
+          }}
+        />
+      ) : null}
+    </Menu>
+  );
 }
 
 // The agent half of a menu; resume runs in place since it is the one action with nothing to confirm.

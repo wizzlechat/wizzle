@@ -1,8 +1,9 @@
 import { useEffect, useRef } from 'react';
 import { Animated } from 'react-native';
-import { Spinner, Text, XStack, YStack, useTheme } from 'tamagui';
+import { Spinner, YStack, useTheme } from 'tamagui';
 import type { Activity, AgentStatus } from '../protocol/index.ts';
 import type { Phase } from '../relay/connection.ts';
+import { Banner } from './banner.tsx';
 
 type PhaseStatus = { label: string; banner: string; color: string; busy: boolean };
 
@@ -81,14 +82,7 @@ export function PhaseDot({ phase, size = 8 }: { phase: Phase; size?: number }) {
 // Only on screen while something is wrong; connecting and securing are the dot beside the bridge name.
 export function ConnectionBanner({ phase, error }: { phase: Phase; error: string | null }) {
   if (phase === 'connected' || PASSING[phase]) return null;
-  return (
-    <XStack items="center" gap="$2" px="$4" py="$2" bg="$color3">
-      <StatusDot phase={phase} size={8} />
-      <Text flex={1} fontSize="$2" color="$color11">
-        {error ?? PHASE[phase].banner}
-      </Text>
-    </XStack>
-  );
+  return <Banner leading={<StatusDot phase={phase} size={8} />}>{error ?? PHASE[phase].banner}</Banner>;
 }
 
 // What the agent is doing right now, in the bridge's own words when it sent any.

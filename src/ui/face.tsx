@@ -1,8 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useIsFocused } from 'expo-router';
+import { useEffect, useMemo, useRef } from 'react';
 import { Animated, Easing, Pressable, View, type ViewStyle } from 'react-native';
 import Svg, { Circle, Ellipse, Path } from 'react-native-svg';
 import { useThemeName } from 'tamagui';
 import type { Accessory, AgentProfile, EyeStyle } from '../store/types.ts';
+import { useDeadline } from './deadline.ts';
+import { useAnimations } from './motion.ts';
 import { useSleeping } from './sleeping.ts';
 
 const EYE_COLOR = '#141414';
@@ -58,22 +61,7 @@ function between(min: number, max: number): number {
 // Asleep once lastAt is SLEEP_MS old; the timer lets a screen nobody touches still doze off.
 export function useAsleep(lastAt: number | undefined, busy: boolean): boolean {
   const enabled = useSleeping();
-  const [asleep, setAsleep] = useState(() => enabled && !busy && lastAt !== undefined && lastAt + SLEEP_MS <= Date.now());
-  useEffect(() => {
-    if (!enabled || busy || lastAt === undefined) {
-      setAsleep(false);
-      return;
-    }
-    const left = lastAt + SLEEP_MS - Date.now();
-    if (left <= 0) {
-      setAsleep(true);
-      return;
-    }
-    setAsleep(false);
-    const timer = setTimeout(() => setAsleep(true), left);
-    return () => clearTimeout(timer);
-  }, [enabled, lastAt, busy]);
-  return asleep;
+  return useDeadline(enabled && !busy && lastAt !== undefined ? lastAt + SLEEP_MS : undefined);
 }
 
 function eyeStyle(style: EyeStyle, size: number): ViewStyle {
@@ -121,8 +109,19 @@ export function Face({
   const eyes = look?.eyes ?? 'pill';
   const sleeping = asleep && !thinking;
   const reach = size * 0.12;
+  // A face on a screen another one covers holds still, so no timers run for it; so does one with animations off.
+  const focused = useIsFocused();
+  const animated = useAnimations();
 
   useEffect(() => {
+    if (!focused || !animated) {
+      blink.setValue(1);
+      lookX.setValue(0);
+      lookY.setValue(0);
+      bob.setValue(0);
+      slump.setValue(sleeping ? 1 : 0);
+      return;
+    }
     if (sleeping) {
       blink.setValue(1);
       lookX.setValue(0);
@@ -140,6 +139,7 @@ export function Face({
       } else {
         slump.setValue(1);
       }
+      seenAwake.current = false;
       breathing.start();
       drifting.start();
       return () => {
@@ -213,18 +213,18 @@ export function Face({
       lookX.stopAnimation();
       lookY.stopAnimation();
     };
-  }, [blink, lookX, lookY, bob, breath, zzz, slump, reach, thinking, sleeping]);
+  }, [blink, lookX, lookY, bob, breath, zzz, slump, reach, thinking, sleeping, focused, animated]);
 
   useEffect(() => {
     const before = lastHop.current;
     lastHop.current = hopAt;
-    if (before === undefined || hopAt === undefined || hopAt <= before) return;
+    if (!animated || before === undefined || hopAt === undefined || hopAt <= before) return;
     hop.setValue(0);
     Animated.sequence([
       Animated.timing(hop, { toValue: 1, duration: 140, easing: Easing.out(Easing.quad), useNativeDriver: true }),
       Animated.spring(hop, { toValue: 0, friction: 4, tension: 140, useNativeDriver: true }),
     ]).start();
-  }, [hopAt, hop]);
+  }, [hopAt, hop, animated]);
 
   function poke(): void {
     squint.stopAnimation();
@@ -310,7 +310,7 @@ export function Face({
           </Animated.View>
         ) : null}
       </Animated.View>
-      {sleeping ? <Zzz drift={zzz} size={size} /> : null}
+      {sleeping && animated ? <Zzz drift={zzz} size={size} /> : null}
     </View>
   );
 

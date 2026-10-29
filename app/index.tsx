@@ -1,20 +1,27 @@
 import { Redirect, Stack, useRouter } from 'expo-router';
-import { useMemo, useState } from 'react';
+import { memo, useCallback, useMemo, useState } from 'react';
 import { FlatList, Platform, Text as NativeText, type ColorValue } from 'react-native';
 import { Button, H4, Paragraph, Text, XStack, YStack, getTokenValue } from 'tamagui';
 import type { Agent } from '../src/protocol/index';
 import { useConnection, type Phase } from '../src/relay/connection';
 import { store, useStore } from '../src/store';
-import type { AgentGroup, AgentProfile, ConversationRow, Notice } from '../src/store/types';
-import { AgentMenuItems, AgentPrompts, canManage, type AgentPrompt } from '../src/ui/agent-actions';
+import type { AgentGroup, AgentProfile, ConversationRow } from '../src/store/types';
+import { AgentMenu, AgentPrompts, type AgentPrompt } from '../src/ui/agent-actions';
+import { Banner } from '../src/ui/banner';
 import { Face, useAsleep } from '../src/ui/face';
 import { Cards, Dots, Gear, Pencil, Plus, Server, Trash } from '../src/ui/icons';
 import { LINE, ListCard, ListRow } from '../src/ui/list';
+import { previewOf } from '../src/ui/plain';
 import { ConnectionBanner, PhaseDot, ThinkingDot, activityLabel } from '../src/ui/status';
+import { chatHref, profileHref } from '../src/ui/titles';
 import { DeleteTopic, Menu, RenameTopic, TitlePrompt } from '../src/ui/topics';
 import { shortTime } from '../src/ui/time';
 
-type AgentAction = { agent: Agent; prompt: 'menu' | AgentPrompt };
+// Whatever sits over the list: one at a time.
+type Overlay =
+  | { kind: 'newTopic'; agent: Agent }
+  | { kind: 'topic'; row: ConversationRow; prompt: 'menu' | 'rename' | 'delete' }
+  | { kind: 'agent'; agent: Agent; prompt: 'menu' | AgentPrompt };
 
 // The face in an agent's large list style.
 const LARGE_FACE = 40;
@@ -23,8 +30,6 @@ const LARGE_FACE = 40;
 function headroom(look: AgentProfile | undefined, padding: '$2' | '$3'): number {
   return look?.accessory ? Math.max(0, Math.round(LARGE_FACE * 0.45) - getTokenValue(padding, 'space')) : 0;
 }
-
-type TopicAction = { row: ConversationRow; prompt: 'menu' | 'rename' | 'delete' };
 
 type ListItem = { key: string; kind: 'group'; group: AgentGroup } | { key: string; kind: 'row'; row: ConversationRow };
 
@@ -42,76 +47,35 @@ export default function Conversations() {
   const conn = useConnection();
   const snapshot = useStore();
   const router = useRouter();
-  const [prompt, setPrompt] = useState<Agent | null>(null);
-  const [action, setAction] = useState<AgentAction | null>(null);
-  const [topicAction, setTopicAction] = useState<TopicAction | null>(null);
+  const [overlay, setOverlay] = useState<Overlay | null>(null);
   const items = useMemo(() => flatten(snapshot.agentGroups), [snapshot.agentGroups]);
   const canTopic = snapshot.capabilities?.topics === true;
   const canCreate = snapshot.capabilities?.createAgent === true;
+  // Stable callbacks, so a row whose data did not change keeps its render while another streams.
+  const openChat = useCallback((conv: string) => router.push(chatHref(conv)), [router]);
+  const openProfile = useCallback((agentId: string) => router.push(profileHref(agentId)), [router]);
+  const newTopic = useCallback((agent: Agent) => setOverlay({ kind: 'newTopic', agent }), []);
+  const manageAgent = useCallback((agent: Agent) => setOverlay({ kind: 'agent', agent, prompt: 'menu' }), []);
+  // A topic's long press is about that topic; a default conversation's is about its agent.
+  const manageRow = useCallback((row: ConversationRow) => {
+    if (row.topic) setOverlay({ kind: 'topic', row, prompt: 'menu' });
+    else if (row.agent) setOverlay({ kind: 'agent', agent: row.agent, prompt: 'menu' });
+  }, []);
+  const close = () => setOverlay(null);
   if (conn.phase === 'unpaired' || !conn.pairing) return <Redirect href="/pair" />;
 
-  function openChat(conv: string): void {
-    router.push(`/chat/${encodeURIComponent(conv)}`);
-  }
-
-  function openProfile(agentId: string): void {
-    router.push(`/profile?agent=${encodeURIComponent(agentId)}`);
-  }
-
-  // Every agent's menu opens its profile; the lifecycle and key rows follow where the host allows them.
-  function manage(agent: Agent | null): (() => void) | undefined {
-    if (!agent) return undefined;
-    return () => setAction({ agent, prompt: 'menu' });
-  }
-
-  // A topic's long press is about that topic; the agent's own actions sit on its card's menu.
-  function manageRow(row: ConversationRow): (() => void) | undefined {
-    if (row.topic) return canTopic ? () => setTopicAction({ row, prompt: 'menu' }) : undefined;
-    return manage(row.agent);
-  }
+  const manageable = (row: ConversationRow): boolean => (row.topic ? canTopic : row.agent !== null);
 
   const bridgeButton = (
-    <Button
-      size="$3"
-      circular
-      chromeless
-      scaleIcon={1.3}
-      aria-label="Switch bridge"
-      icon={<Server />}
-      onPress={() => router.push('/installs')}
-    />
+    <Button size="$3" circular chromeless scaleIcon={1.3} aria-label="Switch bridge" icon={<Server />} onPress={() => router.push('/installs')} />
   );
   const actions = (
     <XStack items="center">
-      <Button
-        size="$3"
-        circular
-        chromeless
-        scaleIcon={1.3}
-        aria-label="Elements"
-        icon={<Cards />}
-        onPress={() => router.push('/elements')}
-      />
+      <Button size="$3" circular chromeless scaleIcon={1.3} aria-label="Elements" icon={<Cards />} onPress={() => router.push('/elements')} />
       {canCreate ? (
-        <Button
-          size="$3"
-          circular
-          chromeless
-          scaleIcon={1.3}
-          aria-label="New agent"
-          icon={<Plus size={22} />}
-          onPress={() => router.push('/create-agent')}
-        />
+        <Button size="$3" circular chromeless scaleIcon={1.3} aria-label="New agent" icon={<Plus size={22} />} onPress={() => router.push('/create-agent')} />
       ) : null}
-      <Button
-        size="$3"
-        circular
-        chromeless
-        scaleIcon={1.3}
-        aria-label="Settings"
-        icon={<Gear />}
-        onPress={() => router.push('/settings')}
-      />
+      <Button size="$3" circular chromeless scaleIcon={1.3} aria-label="Settings" icon={<Gear />} onPress={() => router.push('/settings')} />
     </XStack>
   );
 
@@ -128,7 +92,9 @@ export default function Conversations() {
       <YStack flex={1}>
         <ConnectionBanner phase={conn.phase} error={conn.error} />
         {snapshot.notices.map((notice) => (
-          <NoticeRow key={notice.id} notice={notice} />
+          <Banner key={notice.id} danger action="Dismiss" onAction={() => store.dismiss(notice.id)}>
+            {notice.message}
+          </Banner>
         ))}
         <FlatList
           data={items}
@@ -149,12 +115,12 @@ export default function Conversations() {
                     group={item.group}
                     look={snapshot.profiles[item.group.agent.id]}
                     canTopic={canTopic}
-                    onNewTopic={() => setPrompt(item.group.agent)}
-                    onManage={manage(item.group.agent)}
-                    onProfile={() => openProfile(item.group.agent.id)}
+                    onNewTopic={newTopic}
+                    onManage={manageAgent}
+                    onProfile={openProfile}
                   />
                   {item.group.conversations.map((row) => (
-                    <Row key={row.id} row={row} grouped onPress={() => openChat(row.id)} onManage={manageRow(row)} />
+                    <Row key={row.id} row={row} grouped onOpen={openChat} onManage={manageable(row) ? manageRow : undefined} />
                   ))}
                 </ListCard>
               </YStack>
@@ -163,66 +129,52 @@ export default function Conversations() {
                 row={item.row}
                 grouped={false}
                 look={snapshot.profiles[item.row.agentId]}
-                onPress={() => openChat(item.row.id)}
-                onManage={manageRow(item.row)}
-                onProfile={() => openProfile(item.row.agentId)}
+                onOpen={openChat}
+                onManage={manageable(item.row) ? manageRow : undefined}
+                onProfile={openProfile}
               />
             )
           }
         />
-        {prompt ? (
+        {overlay?.kind === 'newTopic' ? (
           <TitlePrompt
-            heading={`New topic for ${prompt.name}`}
+            heading={`New topic for ${overlay.agent.name}`}
             note="Its own session, so this agent keeps the topic apart from its other work."
             action="Create"
-            submit={(title) => store.createTopic(prompt.id, title)}
-            onClose={() => setPrompt(null)}
+            submit={(title) => store.createTopic(overlay.agent.id, title)}
+            onClose={close}
             onDone={(conv) => {
-              setPrompt(null);
+              close();
               openChat(conv);
             }}
           />
         ) : null}
-        {topicAction?.prompt === 'menu' ? (
-          <Menu title={topicAction.row.title} onClose={() => setTopicAction(null)}>
-            <ListRow icon={Pencil} label="Rename topic" onPress={() => setTopicAction({ row: topicAction.row, prompt: 'rename' })} />
-            <ListRow
-              icon={Trash}
-              label="Delete topic"
-              danger
-              onPress={() => setTopicAction({ row: topicAction.row, prompt: 'delete' })}
-            />
-          </Menu>
-        ) : topicAction?.prompt === 'rename' ? (
-          <RenameTopic row={topicAction.row} onClose={() => setTopicAction(null)} />
-        ) : topicAction?.prompt === 'delete' ? (
-          <DeleteTopic row={topicAction.row} onClose={() => setTopicAction(null)} />
+        {overlay?.kind === 'topic' ? (
+          overlay.prompt === 'menu' ? (
+            <Menu title={overlay.row.title} onClose={close}>
+              <ListRow icon={Pencil} label="Rename topic" onPress={() => setOverlay({ ...overlay, prompt: 'rename' })} />
+              <ListRow icon={Trash} label="Delete topic" danger onPress={() => setOverlay({ ...overlay, prompt: 'delete' })} />
+            </Menu>
+          ) : overlay.prompt === 'rename' ? (
+            <RenameTopic row={overlay.row} onClose={close} />
+          ) : (
+            <DeleteTopic row={overlay.row} onClose={close} />
+          )
         ) : null}
-        {action?.prompt === 'menu' ? (
-          <Menu title={action.agent.name} onClose={() => setAction(null)}>
-            <ListRow
-              leading={<Face seed={action.agent.id} look={snapshot.profiles[action.agent.id]} size={22} />}
-              label="Profile"
-              onPress={() => {
-                setAction(null);
-                openProfile(action.agent.id);
-              }}
+        {overlay?.kind === 'agent' ? (
+          overlay.prompt === 'menu' ? (
+            <AgentMenu
+              title={overlay.agent.name}
+              seed={overlay.agent.id}
+              agent={overlay.agent}
+              look={snapshot.profiles[overlay.agent.id]}
+              capabilities={snapshot.capabilities}
+              onPick={(next) => setOverlay({ ...overlay, prompt: next })}
+              onClose={close}
             />
-            {canManage(action.agent, snapshot.capabilities) ? (
-              <AgentMenuItems
-                agent={action.agent}
-                capabilities={snapshot.capabilities}
-                onPick={(next) => setAction({ agent: action.agent, prompt: next })}
-                onResumed={() => setAction(null)}
-                onKeys={() => {
-                  setAction(null);
-                  router.push(`/agent-keys?agent=${encodeURIComponent(action.agent.id)}`);
-                }}
-              />
-            ) : null}
-          </Menu>
-        ) : action ? (
-          <AgentPrompts agent={action.agent} prompt={action.prompt} onClose={() => setAction(null)} />
+          ) : (
+            <AgentPrompts agent={overlay.agent} prompt={overlay.prompt} onClose={close} />
+          )
         ) : null}
       </YStack>
     </>
@@ -244,7 +196,7 @@ function BridgeTitle({ title, color, phase }: { title: string; color?: ColorValu
   );
 }
 
-function AgentHeader({
+const AgentHeader = memo(function AgentHeader({
   group,
   look,
   canTopic,
@@ -255,11 +207,12 @@ function AgentHeader({
   group: AgentGroup;
   look: AgentProfile | undefined;
   canTopic: boolean;
-  onNewTopic: () => void;
-  onManage: (() => void) | undefined;
-  onProfile: () => void;
+  onNewTopic: (agent: Agent) => void;
+  onManage: (agent: Agent) => void;
+  onProfile: (agentId: string) => void;
 }) {
-  const paused = group.agent.status === 'paused';
+  const { agent } = group;
+  const paused = agent.status === 'paused';
   const unread = group.conversations.reduce((sum, row) => sum + row.unread, 0);
   const lastAt = group.conversations.reduce((at, row) => Math.max(at, row.lastAt ?? row.createdAt ?? 0), 0);
   const repliedAt = group.conversations.reduce((at, row) => Math.max(at, row.repliedAt ?? 0), 0);
@@ -270,52 +223,35 @@ function AgentHeader({
     null,
   );
   return (
-    <XStack
-      items="center"
-      gap={large ? '$2.5' : '$2'}
-      pl="$4"
-      pr="$2"
-      py="$2"
-      minH={48}
-      borderBottomWidth={LINE}
-      borderColor="$color5"
-    >
-      <FaceButton name={group.agent.name} headroom={large ? headroom(look, '$2') : 0} onPress={onProfile}>
-        <Face
-          seed={group.agent.id}
-          look={look}
-          size={large ? LARGE_FACE : undefined}
-          asleep={asleep}
-          hopAt={repliedAt > 0 ? repliedAt : undefined}
-        />
+    <XStack items="center" gap={large ? '$2.5' : '$2'} pl="$4" pr="$2" py="$2" minH={48} borderBottomWidth={LINE} borderColor="$color5">
+      <FaceButton name={agent.name} headroom={large ? headroom(look, '$2') : 0} onPress={() => onProfile(agent.id)}>
+        <Face seed={agent.id} look={look} size={large ? LARGE_FACE : undefined} asleep={asleep} hopAt={repliedAt > 0 ? repliedAt : undefined} />
       </FaceButton>
       {large ? (
         <YStack flex={1} gap="$1">
           <Text fontWeight="600" numberOfLines={1}>
-            {group.agent.name}
+            {agent.name}
           </Text>
           <Text fontSize="$2" color="$color11" numberOfLines={1}>
-            {newest?.preview || 'No messages yet'}
+            {previewOf(newest?.last) || 'No messages yet'}
           </Text>
         </YStack>
       ) : (
         <Text flex={1} fontSize="$2" fontWeight="700" color="$color11" numberOfLines={1}>
-          {group.agent.name}
+          {agent.name}
         </Text>
       )}
       {unread > 0 ? <Badge count={unread} /> : null}
       {paused ? <PausedLabel /> : null}
       {canTopic && !paused ? (
-        <Button size="$2" chromeless icon={<Plus size={16} />} aria-label={`New topic for ${group.agent.name}`} onPress={onNewTopic}>
+        <Button size="$2" chromeless icon={<Plus size={16} />} aria-label={`New topic for ${agent.name}`} onPress={() => onNewTopic(agent)}>
           New topic
         </Button>
       ) : null}
-      {onManage ? (
-        <Button size="$2" circular chromeless icon={<Dots size={18} />} aria-label={`Manage ${group.agent.name}`} onPress={onManage} />
-      ) : null}
+      <Button size="$2" circular chromeless icon={<Dots size={18} />} aria-label={`Manage ${agent.name}`} onPress={() => onManage(agent)} />
     </XStack>
   );
-}
+});
 
 function PausedLabel() {
   return (
@@ -346,29 +282,29 @@ function FaceButton({
 }
 
 // A row inside its agent's card, or a bubble of its own; a long press opens the agent's actions.
-function Row({
+const Row = memo(function Row({
   row,
   grouped,
   look,
-  onPress,
+  onOpen,
   onManage,
   onProfile,
 }: {
   row: ConversationRow;
   grouped: boolean;
   look?: AgentProfile;
-  onPress: () => void;
-  onManage: (() => void) | undefined;
-  onProfile?: () => void;
+  onOpen: (conv: string) => void;
+  onManage: ((row: ConversationRow) => void) | undefined;
+  onProfile?: (agentId: string) => void;
 }) {
   const paused = row.agent?.status === 'paused';
   const busy = row.activity !== null && !paused;
-  const preview = busy && row.activity ? activityLabel(row.activity) : row.preview;
+  const preview = busy && row.activity ? activityLabel(row.activity) : previewOf(row.last);
   const asleep = useAsleep(grouped ? undefined : (row.lastAt ?? row.createdAt), row.activity !== null);
   const large = !grouped && look?.listStyle === 'large';
   const face = <Face seed={row.agentId} look={look} size={large ? LARGE_FACE : undefined} asleep={asleep} hopAt={row.repliedAt} />;
   const avatar = grouped ? null : onProfile ? (
-    <FaceButton name={row.agent?.name ?? row.title} headroom={large ? headroom(look, '$3') : 0} onPress={onProfile}>
+    <FaceButton name={row.agent?.name ?? row.title} headroom={large ? headroom(look, '$3') : 0} onPress={() => onProfile(row.agentId)}>
       {face}
     </FaceButton>
   ) : (
@@ -411,9 +347,11 @@ function Row({
   ) : (
     lines
   );
+  const open = () => onOpen(row.id);
+  const manage = onManage ? () => onManage(row) : undefined;
   if (grouped) {
     return (
-      <YStack pl="$4" pressStyle={{ bg: '$color4' }} opacity={paused ? 0.6 : 1} onPress={onPress} onLongPress={onManage}>
+      <YStack pl="$4" pressStyle={{ bg: '$color4' }} opacity={paused ? 0.6 : 1} onPress={open} onLongPress={manage}>
         <YStack py="$3" pr="$4" gap="$1" borderBottomWidth={LINE} borderColor="$color5">
           {body}
         </YStack>
@@ -421,22 +359,11 @@ function Row({
     );
   }
   return (
-    <YStack
-      mx="$3"
-      px="$4"
-      py="$3"
-      gap="$1"
-      rounded="$8"
-      bg="$color3"
-      pressStyle={{ bg: '$color4' }}
-      opacity={paused ? 0.6 : 1}
-      onPress={onPress}
-      onLongPress={onManage}
-    >
+    <YStack mx="$3" px="$4" py="$3" gap="$1" rounded="$8" bg="$color3" pressStyle={{ bg: '$color4' }} opacity={paused ? 0.6 : 1} onPress={open} onLongPress={manage}>
       {body}
     </YStack>
   );
-}
+});
 
 function Badge({ count }: { count: number }) {
   return (
@@ -444,19 +371,6 @@ function Badge({ count }: { count: number }) {
       <Text fontSize="$1" color="$color1" fontWeight="700">
         {count}
       </Text>
-    </XStack>
-  );
-}
-
-function NoticeRow({ notice }: { notice: Notice }) {
-  return (
-    <XStack theme="red" items="center" gap="$2" px="$4" py="$2" bg="$color3">
-      <Text flex={1} fontSize="$2" color="$color11">
-        {notice.message}
-      </Text>
-      <Button size="$1" chromeless onPress={() => store.dismiss(notice.id)}>
-        Dismiss
-      </Button>
     </XStack>
   );
 }

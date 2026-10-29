@@ -1,9 +1,22 @@
 import { useEffect, useRef, useState } from 'react';
 import { Animated, Easing, View } from 'react-native';
+import Reanimated, {
+  Easing as ReEasing,
+  cancelAnimation,
+  interpolateColor,
+  useAnimatedStyle,
+  useSharedValue,
+  withDelay,
+  withRepeat,
+  withSequence,
+  withTiming,
+  type SharedValue,
+} from 'react-native-reanimated';
 import { useTheme } from 'tamagui';
 import type { Activity } from '../protocol/index.ts';
 import type { AgentProfile } from '../store/types.ts';
 import { Face } from './face.tsx';
+import { useAnimations } from './motion.ts';
 import { activityLabel } from './status.tsx';
 
 const ROW_HEIGHT = 36;
@@ -47,6 +60,7 @@ export function ThinkingRow({ activity, seed, look }: { activity: Activity | nul
   const height = useRef(new Animated.Value(0)).current;
   const fly = useRef(new Animated.Value(0)).current;
   const shown = useRef(false);
+  const animated = useAnimations();
 
   useEffect(() => {
     if (current) setLabel(current);
@@ -56,6 +70,12 @@ export function ThinkingRow({ activity, seed, look }: { activity: Activity | nul
     if (active === shown.current) return;
     shown.current = active;
     setSpot(randomSpot());
+    if (!animated) {
+      height.setValue(active ? ROW_HEIGHT : 0);
+      fly.setValue(active ? 1 : 0);
+      if (!active) setLabel(null);
+      return;
+    }
     if (active) {
       Animated.parallel([
         Animated.timing(height, { toValue: ROW_HEIGHT, duration: 180, easing: Easing.out(Easing.quad), useNativeDriver: false }),
@@ -69,7 +89,7 @@ export function ThinkingRow({ activity, seed, look }: { activity: Activity | nul
         if (closed) setLabel(null);
       });
     });
-  }, [active, fly, height]);
+  }, [active, fly, height, animated]);
 
   const faceStyle = {
     opacity: fly.interpolate({ inputRange: [0, 0.3, 1], outputRange: [0, 1, 1], extrapolate: 'clamp' as const }),
@@ -98,42 +118,38 @@ export function ThinkingRow({ activity, seed, look }: { activity: Activity | nul
   );
 }
 
-// Each letter brightens as a band of lighter blue sweeps across from left to right.
+// Each letter brightens as a band of lighter blue sweeps across from left to right, all on the UI thread.
 function Shimmer({ text }: { text: string }) {
   const theme = useTheme();
-  const wave = useRef(new Animated.Value(0)).current;
+  const wave = useSharedValue(0);
   const base = theme.blue10.val;
   const light = mix(base, '#ffffff', 0.45);
 
   useEffect(() => {
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(wave, { toValue: 1, duration: SHIMMER_MS, easing: Easing.linear, useNativeDriver: false }),
-        Animated.delay(300),
-      ]),
+    wave.value = 0;
+    wave.value = withRepeat(
+      withSequence(withTiming(1, { duration: SHIMMER_MS, easing: ReEasing.linear }), withDelay(300, withTiming(1, { duration: 0 }))),
+      -1,
+      false,
     );
-    loop.start();
-    return () => loop.stop();
+    return () => cancelAnimation(wave);
   }, [wave]);
 
   const chars = Array.from(text.length > MAX_CHARS ? `${text.slice(0, MAX_CHARS - 3)}...` : text);
   const last = Math.max(1, chars.length - 1);
   return (
     <View style={{ flexDirection: 'row' }}>
-      {chars.map((char, index) => {
+      {chars.map((char, index) => (
         // The band runs from just before the first letter to just past the last, in wave units.
-        const peak = (index / last + 0.4) / 1.8;
-        const color = wave.interpolate({
-          inputRange: [peak - 0.2, peak, peak + 0.2],
-          outputRange: [base, light, base],
-          extrapolate: 'clamp',
-        });
-        return (
-          <Animated.Text key={index} style={{ color, fontFamily: 'Inter', fontSize: 15 }}>
-            {char}
-          </Animated.Text>
-        );
-      })}
+        <Letter key={index} char={char} peak={(index / last + 0.4) / 1.8} wave={wave} base={base} light={light} />
+      ))}
     </View>
   );
+}
+
+const LETTER = { fontFamily: 'Inter', fontSize: 15 };
+
+function Letter({ char, peak, wave, base, light }: { char: string; peak: number; wave: SharedValue<number>; base: string; light: string }) {
+  const style = useAnimatedStyle(() => ({ color: interpolateColor(wave.value, [peak - 0.2, peak, peak + 0.2], [base, light, base]) }));
+  return <Reanimated.Text style={[LETTER, style]}>{char}</Reanimated.Text>;
 }

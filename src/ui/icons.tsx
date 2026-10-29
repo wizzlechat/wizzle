@@ -58,6 +58,18 @@ export function Dots({ size = 22, color }: { size?: number; color?: string }) {
   );
 }
 
+// Three dots in a row, the shape iOS uses for a message's own menu.
+export function Ellipsis({ size = 22, color }: { size?: number; color?: string }) {
+  const ink = useInk(color);
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24">
+      <Circle cx={5} cy={12} r={2} fill={ink} />
+      <Circle cx={12} cy={12} r={2} fill={ink} />
+      <Circle cx={19} cy={12} r={2} fill={ink} />
+    </Svg>
+  );
+}
+
 export function Paperclip({ size = 22, color }: { size?: number; color?: string }) {
   const ink = useInk(color);
   return (
@@ -156,6 +168,24 @@ export function Contrast({ size = 22, color }: { size?: number; color?: string }
     <Outline size={size} ink={ink}>
       <Circle cx={12} cy={12} r={9} />
       <Path d="M12 3a9 9 0 0 1 0 18z" fill={ink} stroke="none" />
+    </Outline>
+  );
+}
+
+export function Bell({ size = 22, color }: { size?: number; color?: string }) {
+  const ink = useInk(color);
+  return (
+    <Outline size={size} ink={ink}>
+      <Path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0" />
+    </Outline>
+  );
+}
+
+export function Letters({ size = 22, color }: { size?: number; color?: string }) {
+  const ink = useInk(color);
+  return (
+    <Outline size={size} ink={ink}>
+      <Path d="M4 7V4h16v3M9 20h6M12 4v16" />
     </Outline>
   );
 }
