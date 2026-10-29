@@ -9,21 +9,24 @@ import { ListRow, ListSection } from '../src/ui/list';
 import { PHASE, StatusDot } from '../src/ui/status';
 import { shortTime } from '../src/ui/time';
 
-const FEATURES: Array<{ key: keyof Capabilities; label: string }> = [
-  { key: 'history', label: 'History' },
-  { key: 'questions', label: 'Questions' },
-  { key: 'approvals', label: 'Approvals' },
-  { key: 'files', label: 'Files' },
-  { key: 'streaming', label: 'Streaming' },
-  { key: 'createAgent', label: 'New agents' },
-  { key: 'topics', label: 'Topics' },
-  { key: 'templates', label: 'Templates' },
-  { key: 'lifecycle', label: 'Pause and restart' },
-  { key: 'deleteAgent', label: 'Delete agents' },
-  { key: 'clearSession', label: 'Clear session' },
-  { key: 'abort', label: 'Abort' },
-  { key: 'tasks', label: 'Tasks' },
-];
+// Every capability has a row; a new one in the protocol fails to compile until it has a label here.
+const FEATURES: Record<keyof Capabilities, string> = {
+  history: 'History',
+  questions: 'Questions',
+  approvals: 'Approvals',
+  files: 'Files',
+  streaming: 'Streaming',
+  createAgent: 'New agents',
+  topics: 'Topics',
+  templates: 'Templates',
+  lifecycle: 'Pause and restart',
+  deleteAgent: 'Delete agents',
+  clearSession: 'Clear session',
+  abort: 'Abort',
+  tasks: 'Tasks',
+  keys: 'Keys',
+};
+const FEATURE_KEYS = Object.keys(FEATURES) as (keyof Capabilities)[];
 
 export default function BridgeSettings() {
   const conn = useConnection();
@@ -99,13 +102,7 @@ export default function BridgeSettings() {
 
           <ListSection title="What this bridge supports">
             {snapshot.capabilities ? (
-              FEATURES.map((feature) => (
-                <ListRow
-                  key={feature.key}
-                  label={feature.label}
-                  value={snapshot.capabilities?.[feature.key] ? 'Yes' : 'No'}
-                />
-              ))
+              FEATURE_KEYS.map((key) => <ListRow key={key} label={FEATURES[key]} value={snapshot.capabilities?.[key] ? 'Yes' : 'No'} />)
             ) : (
               <ListRow label="Waiting for the bridge to answer sync" busy />
             )}
