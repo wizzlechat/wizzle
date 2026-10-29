@@ -5,7 +5,7 @@ import { Paragraph, ScrollView, Text, YStack, useTheme } from 'tamagui';
 import type { TemplateInfo } from '../src/protocol/index';
 import { useConnection } from '../src/relay/connection';
 import { SYSTEM_CONV, store, useStore } from '../src/store';
-import { MAX_NAME_CHARS, MAX_PURPOSE_CHARS, agentFolder, nameFailure } from '../src/store/store';
+import { MAX_NAME_CHARS, MAX_PURPOSE_CHARS, agentFolder, nameFailure } from '../src/store/validate';
 import type { CreateState } from '../src/store/types';
 import { Field, Pill } from '../src/ui/controls';
 import { Check } from '../src/ui/icons';

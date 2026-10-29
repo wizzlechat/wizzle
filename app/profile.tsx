@@ -1,25 +1,24 @@
 import { Stack, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { H4, Paragraph, ScrollView, Text, XStack, YStack } from 'tamagui';
-import { store, useStore } from '../src/store';
-import { ACCESSORIES, EYE_STYLES, LIST_STYLES, MAX_NAME_CHARS } from '../src/store/store';
+import { store, useProfile, useSelector } from '../src/store';
 import type { Accessory, AgentProfile, EyeStyle, ListStyle } from '../src/store/types';
+import { ACCESSORIES, EYE_STYLES, LIST_STYLES, MAX_NAME_CHARS } from '../src/store/validate';
 import { Field, Pill } from '../src/ui/controls';
 import { Face, faceColor } from '../src/ui/face';
 import { ListRow, ListSection, SectionTitle } from '../src/ui/list';
-import { profileTitle } from '../src/ui/titles';
 
 const HUES = [0, 20, 40, 95, 145, 175, 200, 225, 255, 285, 320];
 const EYE_LABELS: Record<EyeStyle, string> = { pill: 'Classic', dot: 'Dots', wide: 'Bright', visor: 'Visor' };
 const ACCESSORY_LABELS: Record<Accessory, string> = { antenna: 'Antenna', sprout: 'Sprout', bow: 'Bow', crown: 'Crown', halo: 'Halo' };
 const LIST_LABELS: Record<ListStyle, string> = { compact: 'Compact', large: 'Large' };
+const EMPTY_PROFILE: AgentProfile = {};
 
 // One agent as wizzle sees it: its nickname and look are kept here and never reach the host.
 export default function Profile() {
   const { agent: agentId = '' } = useLocalSearchParams<{ agent?: string }>();
-  const snapshot = useStore();
-  const agent = snapshot.agents.find((one) => one.id === agentId);
-  const profile = snapshot.profiles[agentId] ?? {};
+  const agent = useSelector((snapshot) => snapshot.agents.find((one) => one.id === agentId));
+  const profile = useProfile(agentId) ?? EMPTY_PROFILE;
   const hostName = agent?.hostName ?? agent?.name ?? '';
   const [nickname, setNickname] = useState(profile.nickname ?? '');
 
@@ -39,7 +38,7 @@ export default function Profile() {
   if (!agent) {
     return (
       <>
-        <Stack.Screen options={{ title: profileTitle(snapshot, agentId) }} />
+        <Stack.Screen options={{ title: 'Profile' }} />
         <Paragraph p="$6" color="$color11" text="center">
           This agent is not in wizzle.
         </Paragraph>
@@ -50,7 +49,7 @@ export default function Profile() {
   const eyes = profile.eyes ?? 'pill';
   return (
     <>
-      <Stack.Screen options={{ title: profileTitle(snapshot, agentId) }} />
+      <Stack.Screen options={{ title: agent.name }} />
       <ScrollView keyboardShouldPersistTaps="handled">
         <YStack p="$4" pb="$8" gap="$5">
           <YStack items="center" gap="$2" pt="$8">

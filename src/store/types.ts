@@ -60,7 +60,6 @@ export type OpenQuestion = { question: Question; answered?: string | string[] };
 export type OpenApproval = { approval: Approval; decided?: ApprovalDecision };
 
 export type ConversationState = {
-  id: string;
   messages: ChatEntry[];
   activity: Activity | null;
   questions: OpenQuestion[];
@@ -84,7 +83,8 @@ export type AgentView = Agent & { hostName?: string };
 
 export type ConversationRow = Conversation & {
   agent: AgentView | null;
-  preview: string;
+  // The newest entry wizzle holds, which the list shows a line of.
+  last: ChatEntry | null;
   activity: Activity | null;
   questions: number;
   unread: number;

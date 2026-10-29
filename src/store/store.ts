@@ -1,37 +1,43 @@
-import { lexer, type Token, type Tokens } from 'marked';
 import type { FileStore } from '../files/types.ts';
 import {
-  MAX_FILE_BYTES,
   fromUtf8,
   isElementFile,
   validateElement,
-  type Activity,
-  type ActivityState,
   type Agent,
   type AgentStatus,
-  type Approval,
   type ApprovalDecision,
   type Capabilities,
   type ChatMessage,
-  type ChatRole,
   type Conversation,
   type DecodedPacket,
   type FileMeta,
   type WizzleMessage,
-  type Question,
-  type QuestionOption,
   type Secret,
   type SecretChanges,
-  type SecretInjection,
   type SecretInput,
-  type SecretType,
   type SessionEvent,
   type TemplateInfo,
-  type TextFormat,
 } from '../protocol/index.ts';
+import type { PacketListener } from '../relay/connection.ts';
 import type { CachedConversation, StoreCache } from './cache.ts';
+import {
+  isRecord,
+  num,
+  str,
+  toActivity,
+  toAgent,
+  toApproval,
+  toChatMessage,
+  toConversation,
+  toFileMeta,
+  toFormat,
+  toHello,
+  toProfile,
+  toQuestion,
+  toSecret,
+  toTemplateInfo,
+} from './parse.ts';
 import type {
-  Accessory,
   AgentGroup,
   AgentProfile,
   AgentView,
@@ -41,8 +47,6 @@ import type {
   ConversationRow,
   ConversationState,
   CreateState,
-  EyeStyle,
-  ListStyle,
   Notice,
   OpenApproval,
   OpenQuestion,
@@ -50,6 +54,7 @@ import type {
   StoreSnapshot,
   StoredElement,
 } from './types.ts';
+import { attachmentsFailure, deviceTimezone, nameFailure, purposeFailure, titleFailure } from './validate.ts';
 
 export const SYSTEM_CONV = 'wizzle:system';
 
@@ -59,18 +64,6 @@ function elementKey(agentId: string, id: string): string {
 
 const HISTORY_PAGE = 50;
 const MAX_PENDING = 128;
-const PREVIEW_CHARS = 140;
-const MAX_TITLE_CHARS = 60;
-
-export const MAX_NAME_CHARS = 60;
-export const MAX_PURPOSE_CHARS = 2000;
-export const MAX_ATTACHMENTS = 4;
-export const MAX_ATTACHMENT_TOTAL = 32 * 1024 * 1024;
-export const EYE_STYLES: EyeStyle[] = ['pill', 'dot', 'wide', 'visor'];
-export const ACCESSORIES: Accessory[] = ['antenna', 'sprout', 'bow', 'crown', 'halo'];
-export const LIST_STYLES: ListStyle[] = ['compact', 'large'];
-
-export type PacketListener = (packet: DecodedPacket) => void;
 
 // What the store needs from the relay connection. The tests supply their own.
 export type StoreLink = {
@@ -78,7 +71,15 @@ export type StoreLink = {
   onPacket(listener: PacketListener): () => void;
 };
 
-export type StoreOptions = { link: StoreLink; newId: () => string; now?: () => number; cache?: StoreCache; files?: FileStore };
+// `pairing` names the pairing whose cache the store loads on first use; without it the store starts empty.
+export type StoreOptions = {
+  link: StoreLink;
+  newId: () => string;
+  now?: () => number;
+  cache?: StoreCache;
+  files?: FileStore;
+  pairing?: () => string | null;
+};
 
 // What the create screen collects. Only one of template and copyFrom is ever set.
 export type CreateRequest = { name: string; purpose?: string; template?: string; copyFrom?: string; secrets?: string[] };
@@ -88,7 +89,7 @@ type PendingSend = { t: string; conv?: string; msgId?: string };
 type Settle = { resolve: (conv: string) => void; reject: (failure: SendFailure) => void };
 
 // A topic, agent or key request answers the screen that asked, so its error never becomes a notice.
-type TopicPending = Settle &
+type PendingRequest = Settle &
   (
     | { kind: 'create'; agentId: string; title: string }
     | { kind: 'rename'; conv: string }
@@ -100,329 +101,13 @@ type TopicPending = Settle &
     | { kind: 'attach' | 'detach'; agentId: string; secretId: string }
   );
 
+// What a row was built from; the row is reused while all four are the same objects and number.
+type RowSource = { conv: Conversation; state: ConversationState | undefined; agent: AgentView | null; mark: number };
+
+type ListCache = { agents: AgentView[]; rows: ConversationRow[]; conversations: ConversationRow[]; agentGroups: AgentGroup[] };
+
 const OFFLINE: SendFailure = { code: 'offline', message: 'Not connected to the bridge yet.' };
 const UNCONFIRMED: SendFailure = { code: 'unconfirmed', message: 'The app closed before the bridge confirmed this message.' };
-
-function mib(bytes: number): string {
-  return `${Math.round(bytes / (1024 * 1024))} MiB`;
-}
-
-// Why one more file cannot join a message, checked when it is picked and again on send.
-export function attachmentFailure(current: Attachment[], next: Attachment): SendFailure | null {
-  if (current.length >= MAX_ATTACHMENTS) return { code: 'too_many', message: `At most ${MAX_ATTACHMENTS} files per message.` };
-  if (next.size > MAX_FILE_BYTES) return { code: 'too_large', message: `${next.name} is over ${mib(MAX_FILE_BYTES)}, the most one file can be.` };
-  const total = current.reduce((sum, file) => sum + file.size, 0) + next.size;
-  if (total > MAX_ATTACHMENT_TOTAL) return { code: 'too_large', message: `Files in one message add up to at most ${mib(MAX_ATTACHMENT_TOTAL)}.` };
-  return null;
-}
-
-export function attachmentsFailure(attachments: Attachment[]): SendFailure | null {
-  for (let i = 0; i < attachments.length; i += 1) {
-    const failure = attachmentFailure(attachments.slice(0, i), attachments[i] as Attachment);
-    if (failure) return failure;
-  }
-  return null;
-}
-
-// The host slugs a title to lowercase letters and digits; one with none of them has no id.
-export function titleFailure(title: string): SendFailure | null {
-  const name = title.trim();
-  if (name.length === 0 || !/[a-z0-9]/i.test(name)) return { code: 'bad_request', message: 'A topic title needs a letter or a digit.' };
-  if (name.length > MAX_TITLE_CHARS) return { code: 'bad_request', message: `A topic title is at most ${MAX_TITLE_CHARS} characters.` };
-  return null;
-}
-
-// Mirrors the host's slug so the form can show the folder before the host makes it.
-export function agentFolder(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, '')
-    .slice(0, 63)
-    .replace(/[-_]+$/, '');
-}
-
-export function nameFailure(name: string): SendFailure | null {
-  const trimmed = name.trim();
-  if (trimmed.length === 0) return { code: 'bad_request', message: 'An agent needs a name.' };
-  if (trimmed.length > MAX_NAME_CHARS) return { code: 'bad_request', message: `An agent name is at most ${MAX_NAME_CHARS} characters.` };
-  if (agentFolder(trimmed).length === 0) return { code: 'bad_request', message: 'An agent name needs a letter or a digit.' };
-  if (trimmed.toLowerCase() === 'system') return { code: 'bad_request', message: 'System is a reserved name.' };
-  return null;
-}
-
-export function purposeFailure(purpose: string): SendFailure | null {
-  if (purpose.trim().length > MAX_PURPOSE_CHARS) {
-    return { code: 'too_long', message: `A purpose is at most ${MAX_PURPOSE_CHARS} characters.` };
-  }
-  return null;
-}
-
-// The host stamps the new agent's container clock from this, and refuses anything that is not an IANA id.
-function deviceTimezone(): string | undefined {
-  try {
-    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    if (typeof zone !== 'string') return undefined;
-    return zone === 'UTC' || /^[A-Za-z][A-Za-z_+-]*\/[A-Za-z0-9_+\-/]+$/.test(zone) ? zone : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function str(value: unknown): string | null {
-  return typeof value === 'string' ? value : null;
-}
-
-function num(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null;
-}
-
-function bool(value: unknown): boolean {
-  return value === true;
-}
-
-function toRole(value: unknown): ChatRole {
-  return value === 'user' || value === 'system' ? value : 'agent';
-}
-
-function toFormat(value: unknown): TextFormat {
-  return value === 'markdown' ? 'markdown' : 'text';
-}
-
-function toStatus(value: unknown): AgentStatus {
-  const known: AgentStatus[] = ['idle', 'running', 'waiting', 'offline', 'error', 'paused'];
-  return known.includes(value as AgentStatus) ? (value as AgentStatus) : 'idle';
-}
-
-function toActivityState(value: unknown): ActivityState {
-  const known: ActivityState[] = ['idle', 'thinking', 'tool'];
-  return known.includes(value as ActivityState) ? (value as ActivityState) : 'thinking';
-}
-
-function toCapabilities(value: unknown): Capabilities {
-  const v = isRecord(value) ? value : {};
-  return {
-    streaming: bool(v['streaming']),
-    questions: bool(v['questions']),
-    approvals: bool(v['approvals']),
-    tasks: bool(v['tasks']),
-    files: bool(v['files']),
-    history: bool(v['history']),
-    clearSession: bool(v['clearSession']),
-    abort: bool(v['abort']),
-    createAgent: bool(v['createAgent']),
-    topics: bool(v['topics']),
-    templates: bool(v['templates']),
-    lifecycle: bool(v['lifecycle']),
-    deleteAgent: bool(v['deleteAgent']),
-    keys: bool(v['keys']),
-  };
-}
-
-function toTemplateInfo(value: unknown): TemplateInfo | null {
-  if (!isRecord(value)) return null;
-  const ref = str(value['ref']);
-  const name = str(value['name']);
-  if (!ref || !name) return null;
-  const agentName = str(value['agentName']);
-  const description = str(value['description']);
-  const version = str(value['version']);
-  const tasks = num(value['tasks']);
-  const mcpServers = num(value['mcpServers']);
-  const skills = num(value['skills']);
-  const category = str(value['category']);
-  return {
-    ref,
-    name,
-    ...(tasks !== null && { tasks }),
-    ...(mcpServers !== null && { mcpServers }),
-    ...(skills !== null && { skills }),
-    ...(agentName !== null && { agentName }),
-    ...(description !== null && { description }),
-    ...(version !== null && { version }),
-    ...(category !== null && { category, downloaded: value['downloaded'] === true }),
-  };
-}
-
-function toInjection(value: unknown): SecretInjection | undefined {
-  if (!isRecord(value)) return undefined;
-  const headerName = str(value['headerName']);
-  const valueFormat = str(value['valueFormat']);
-  if (headerName) return { headerName, ...(valueFormat !== null && { valueFormat }) };
-  const paramName = str(value['paramName']);
-  const paramFormat = str(value['paramFormat']);
-  if (paramName) return { paramName, ...(paramFormat !== null && { paramFormat }) };
-  const pathTemplate = str(value['pathTemplate']);
-  if (pathTemplate) return { pathTemplate };
-  const pathRegex = str(value['pathRegex']);
-  const pathReplacement = str(value['pathReplacement']);
-  if (pathRegex && pathReplacement) return { pathRegex, pathReplacement };
-  return undefined;
-}
-
-function toSecret(value: unknown): Secret | null {
-  if (!isRecord(value)) return null;
-  const id = str(value['id']);
-  const name = str(value['name']);
-  const host = str(value['host']);
-  const type = (['generic', 'anthropic', 'openai'] as SecretType[]).find((one) => one === value['type']);
-  if (!id || name === null || host === null || !type) return null;
-  const path = str(value['path']);
-  const injection = toInjection(value['injection']);
-  const createdAt = num(value['createdAt']);
-  return {
-    id,
-    name,
-    type,
-    host,
-    ...(path !== null && { path }),
-    ...(injection !== undefined && { injection }),
-    ...(createdAt !== null && { createdAt }),
-  };
-}
-
-function toAgent(value: unknown): Agent | null {
-  if (!isRecord(value)) return null;
-  const id = str(value['id']);
-  const name = str(value['name']);
-  if (!id || !name) return null;
-  const description = str(value['description']);
-  const model = str(value['model']);
-  return {
-    id,
-    name,
-    status: toStatus(value['status']),
-    ...(description !== null && { description }),
-    ...(model !== null && { model }),
-  };
-}
-
-// Anything unknown or out of range is dropped, so a row another build wrote never breaks a face.
-function toProfile(value: unknown): AgentProfile | null {
-  if (!isRecord(value)) return null;
-  const nickname = str(value['nickname'])?.trim().slice(0, MAX_NAME_CHARS) ?? '';
-  const hue = num(value['hue']);
-  const eyes = EYE_STYLES.find((one) => one === value['eyes']);
-  const accessory = ACCESSORIES.find((one) => one === value['accessory']);
-  const listStyle = LIST_STYLES.find((one) => one === value['listStyle']);
-  const profile: AgentProfile = {
-    ...(nickname.length > 0 && { nickname }),
-    ...(hue !== null && hue >= 0 && hue < 360 && { hue }),
-    ...(eyes !== undefined && { eyes }),
-    ...(accessory !== undefined && { accessory }),
-    ...(listStyle !== undefined && { listStyle }),
-  };
-  return Object.keys(profile).length > 0 ? profile : null;
-}
-
-function toConversation(value: unknown): Conversation | null {
-  if (!isRecord(value)) return null;
-  const id = str(value['id']);
-  const agentId = str(value['agentId']);
-  if (!id || !agentId) return null;
-  const lastAt = num(value['lastAt']);
-  const createdAt = num(value['createdAt']);
-  const lastAgentAt = num(value['lastAgentAt']);
-  return {
-    id,
-    agentId,
-    title: str(value['title']) ?? id,
-    ...(lastAt !== null && { lastAt }),
-    ...(value['topic'] === true && { topic: true }),
-    ...(createdAt !== null && { createdAt }),
-    ...(lastAgentAt !== null && { lastAgentAt }),
-  };
-}
-
-function toChatMessage(value: unknown, now: number): ChatMessage | null {
-  if (!isRecord(value)) return null;
-  const conv = str(value['conv']);
-  const msgId = str(value['msgId']);
-  const text = str(value['text']);
-  if (!conv || !msgId || text === null) return null;
-  return { conv, msgId, role: toRole(value['role']), text, format: toFormat(value['format']), at: num(value['at']) ?? now };
-}
-
-function toActivity(value: unknown): Activity | null {
-  if (!isRecord(value)) return null;
-  const conv = str(value['conv']);
-  if (!conv) return null;
-  const tool = str(value['tool']);
-  const label = str(value['label']);
-  const startedAt = num(value['startedAt']);
-  const timeoutMs = num(value['timeoutMs']);
-  return {
-    conv,
-    state: toActivityState(value['state']),
-    ...(tool !== null && { tool }),
-    ...(label !== null && { label }),
-    ...(startedAt !== null && { startedAt }),
-    ...(timeoutMs !== null && { timeoutMs }),
-  };
-}
-
-function toOption(value: unknown): QuestionOption | null {
-  if (!isRecord(value)) return null;
-  const label = str(value['label']);
-  if (!label) return null;
-  const style = value['style'];
-  const known = style === 'primary' || style === 'danger' || style === 'default';
-  return { label, value: str(value['value']) ?? label, ...(known && { style }) };
-}
-
-function toQuestion(value: unknown): Question | null {
-  if (!isRecord(value)) return null;
-  const conv = str(value['conv']);
-  const questionId = str(value['questionId']);
-  if (!conv || !questionId) return null;
-  const raw = Array.isArray(value['options']) ? value['options'] : [];
-  const options = raw.map(toOption).filter((option): option is QuestionOption => option !== null);
-  const title = str(value['title']);
-  const expiresAt = num(value['expiresAt']);
-  return {
-    conv,
-    questionId,
-    question: str(value['question']) ?? '',
-    options,
-    ...(title !== null && { title }),
-    ...(value['multi'] === true && { multi: true }),
-    ...(expiresAt !== null && { expiresAt }),
-  };
-}
-
-function toApproval(value: unknown): Approval | null {
-  if (!isRecord(value)) return null;
-  const conv = str(value['conv']);
-  const approvalId = str(value['approvalId']);
-  if (!conv || !approvalId) return null;
-  const raw = Array.isArray(value['decisions']) ? value['decisions'] : [];
-  const decisions = raw.filter(
-    (d): d is ApprovalDecision => d === 'allow' || d === 'deny' || d === 'allow_always',
-  );
-  const description = str(value['description']);
-  const command = str(value['command']);
-  const expiresAt = num(value['expiresAt']);
-  return {
-    conv,
-    approvalId,
-    title: str(value['title']) ?? 'Approval',
-    decisions: decisions.length > 0 ? decisions : ['allow', 'deny'],
-    ...(description !== null && { description }),
-    ...(command !== null && { command }),
-    ...(expiresAt !== null && { expiresAt }),
-  };
-}
-
-function toFileMeta(value: unknown): FileMeta | null {
-  if (!isRecord(value)) return null;
-  const name = str(value['name']);
-  if (!name) return null;
-  return { name, mime: str(value['mime']) ?? 'application/octet-stream', size: num(value['size']) ?? 0 };
-}
 
 function sessionText(event: SessionEvent, detail: string | null): string {
   const base =
@@ -448,109 +133,6 @@ function insert(list: ChatEntry[], entry: ChatEntry): ChatEntry[] {
   return next;
 }
 
-// Every store change rebuilds every row, and entries are replaced rather than changed, so each is read once.
-const previews = new WeakMap<ChatEntry, string>();
-
-function previewOf(entry: ChatEntry): string {
-  const cached = previews.get(entry);
-  if (cached !== undefined) return cached;
-  const raw = entry.kind === 'file' ? (entry.text || (entry.file?.name ?? 'File')) : entry.text || (entry.attachments?.[0]?.name ?? '');
-  // The chat renders agent markdown, so the list shows the words it reads as, without the markup.
-  const text = entry.format === 'markdown' && entry.role !== 'user' ? plainText(lexer(raw), ' ') : raw;
-  const preview = text.replace(/\s+/g, ' ').trim().slice(0, PREVIEW_CHARS);
-  previews.set(entry, preview);
-  return preview;
-}
-
-// Block tokens join with `gap`; inline tokens inside them run together.
-function plainText(tokens: Token[], gap: string): string {
-  return tokens.map(plainToken).join(gap);
-}
-
-function plainToken(token: Token): string {
-  switch (token.type) {
-    case 'space':
-    case 'hr':
-    case 'br':
-      return ' ';
-    case 'html':
-    case 'checkbox':
-    case 'def':
-      return '';
-    case 'code':
-    case 'codespan':
-    case 'escape':
-    case 'image':
-      return token.text;
-    case 'blockquote':
-    case 'list_item':
-      return plainText(token.tokens ?? [], ' ');
-    case 'list':
-      return plainText(token.items, ' ');
-    case 'table':
-      return [...token.header, ...token.rows.flat()].map((cell) => plainText(cell.tokens, '')).join(' ');
-  }
-  const rest = token as Tokens.Generic;
-  if (rest.tokens) return plainText(rest.tokens, '');
-  return typeof rest.text === 'string' ? rest.text : '';
-}
-
-// A message as it reads without its markdown, for copying: blocks a blank line apart, list items one per line.
-export function plainMessage(markdown: string): string {
-  return lexer(markdown)
-    .map(copyBlock)
-    .filter((block) => block.length > 0)
-    .join('\n\n');
-}
-
-function copyBlock(token: Token): string {
-  switch (token.type) {
-    case 'space':
-    case 'hr':
-    case 'html':
-    case 'def':
-      return '';
-    case 'code':
-      return token.text;
-    case 'blockquote':
-      return (token.tokens ?? [])
-        .map(copyBlock)
-        .filter((block) => block.length > 0)
-        .join('\n\n');
-    case 'list': {
-      const list = token as Tokens.List;
-      const start = typeof list.start === 'number' ? list.start : 1;
-      return list.items
-        .map((item, i) => `${list.ordered ? `${start + i}.` : '\u2022'} ${item.tokens.map(copyBlock).join('\n').trim()}`)
-        .join('\n');
-    }
-    case 'table': {
-      const table = token as Tokens.Table;
-      return [table.header, ...table.rows].map((row) => row.map((cell) => copyInline(cell.tokens)).join('\t')).join('\n');
-    }
-  }
-  const rest = token as Tokens.Generic;
-  if (rest.tokens) return copyInline(rest.tokens).trim();
-  return typeof rest.text === 'string' ? rest.text.trim() : '';
-}
-
-// A link keeps its address beside its words, since plain text cannot hold it any other way.
-function copyInline(tokens: Token[]): string {
-  return tokens
-    .map((token) => {
-      if (token.type === 'link') {
-        const label = copyInline(token.tokens ?? []);
-        return label === token.href ? label : `${label} (${token.href})`;
-      }
-      if (token.type === 'br') return '\n';
-      if (token.type === 'html' || token.type === 'checkbox') return '';
-      const rest = token as Tokens.Generic;
-      if (rest.tokens) return copyInline(rest.tokens);
-      return typeof rest.text === 'string' ? rest.text : '';
-    })
-    .join('');
-}
-
 // Agent rows carry the bridge's clock, so read marks compare against them and never wizzle's.
 function newestAgentAt(messages: ChatEntry[]): number | undefined {
   let at: number | undefined;
@@ -558,31 +140,18 @@ function newestAgentAt(messages: ChatEntry[]): number | undefined {
   return at;
 }
 
-// Kept per transcript array for the same reason as the unread counts below.
-const repliedTimes = new WeakMap<ChatEntry[], number | undefined>();
-
-function repliedAtOf(messages: ChatEntry[]): number | undefined {
-  if (repliedTimes.has(messages)) return repliedTimes.get(messages);
-  const at = newestAgentAt(messages);
-  repliedTimes.set(messages, at);
-  return at;
-}
-
-// A transcript array is replaced whenever it changes, so its count holds until it or the mark does.
-const unreadCounts = new WeakMap<ChatEntry[], { mark: number; count: number }>();
-
 function unreadOf(messages: ChatEntry[], mark: number): number {
-  const cached = unreadCounts.get(messages);
-  if (cached?.mark === mark) return cached.count;
   let count = 0;
   for (const entry of messages) if (entry.role === 'agent' && entry.at > mark) count += 1;
-  unreadCounts.set(messages, { mark, count });
   return count;
 }
 
-function emptyConversation(id: string): ConversationState {
-  return { id, messages: [], activity: null, questions: [], approvals: [], notices: [], hasMore: false, loading: false, requested: false };
+function emptyConversation(): ConversationState {
+  return { messages: [], activity: null, questions: [], approvals: [], notices: [], hasMore: false, loading: false, requested: false };
 }
+
+// What a screen reads for a conversation the store holds nothing on; one object, so it never looks changed.
+const EMPTY = emptyConversation();
 
 function expired(expiresAt: number | undefined, now: number): boolean {
   return expiresAt !== undefined && expiresAt <= now;
@@ -608,10 +177,13 @@ export class WizzleStore {
   private readonly link: StoreLink;
   private readonly newId: () => string;
   private readonly now: () => number;
+  private readonly pairingOf: (() => string | null) | null;
+  private loaded = false;
   private readonly convs = new Map<string, ConversationState>();
   private readonly sent = new Map<string, PendingSend>();
-  private readonly questionHome = new Map<string, string>();
-  private readonly topicRequests = new Map<string, TopicPending>();
+  // Which conversation each open question or approval belongs to, by its id.
+  private readonly promptHome = new Map<string, string>();
+  private readonly requests = new Map<string, PendingRequest>();
   private readonly listeners = new Set<() => void>();
   private agents: Agent[] = [];
   private catalog: Conversation[] = [];
@@ -630,9 +202,15 @@ export class WizzleStore {
   private readonly files: FileStore | null;
   private readonly historyBefore = new Map<string, string | undefined>();
   private readonly elements = new Map<string, StoredElement>();
+  private elementList: StoredElement[] = [];
   private readonly readMarks = new Map<string, number>();
   private readFloor = 0;
   private readonly profiles = new Map<string, AgentProfile>();
+  private profileView: Record<string, AgentProfile> = {};
+  // Derived views kept between snapshots, so a packet for one conversation rebuilds one row.
+  private readonly viewCache = new Map<string, { agent: Agent; nickname: string | undefined; view: AgentView }>();
+  private readonly rowCache = new Map<string, { source: RowSource; row: ConversationRow }>();
+  private list: ListCache | null = null;
   // Sends wait their turn here, so a message never overtakes one still reading its files.
   private chain: Promise<void> = Promise.resolve();
   private queued = 0;
@@ -645,6 +223,7 @@ export class WizzleStore {
     this.now = opts.now ?? Date.now;
     this.cache = opts.cache ?? null;
     this.files = opts.files ?? null;
+    this.pairingOf = opts.pairing ?? null;
     this.detach = opts.link.onPacket((packet) => this.receive(packet));
   }
 
@@ -654,23 +233,25 @@ export class WizzleStore {
   };
 
   readonly getSnapshot = (): StoreSnapshot => {
+    this.load();
     if (!this.snapshot) this.snapshot = this.compute();
     return this.snapshot;
   };
 
   // Stable until that element is replaced, so a chat row re-renders only when its element changes.
-  readonly element = (agentId: string, id: string): StoredElement | undefined => this.elements.get(elementKey(agentId, id));
+  readonly element = (agentId: string, id: string): StoredElement | undefined => {
+    this.load();
+    return this.elements.get(elementKey(agentId, id));
+  };
 
-  // Stable per conversation object so untouched screens do not re-render.
-  readonly conversation = (conv: string): ConversationState => {
-    const existing = this.convs.get(conv);
-    if (existing) return existing;
-    const fresh = emptyConversation(conv);
-    this.convs.set(conv, fresh);
-    return fresh;
+  // Stable per conversation object so untouched screens do not re-render. Reading never creates state.
+  readonly peek = (conv: string): ConversationState => {
+    this.load();
+    return this.convs.get(conv) ?? EMPTY;
   };
 
   get capabilities(): Capabilities | null {
+    this.load();
     return this.hello?.capabilities ?? null;
   }
 
@@ -723,6 +304,7 @@ export class WizzleStore {
 
   // Copies a picked file into wizzle's files folder so a send, or a later retry, can read it.
   async attach(conv: string, picked: FileMeta & { uri: string }): Promise<Attachment | null> {
+    this.load();
     if (!this.files || !this.pairingId) return null;
     const kept = await this.files.keep(this.pairingId, conv, this.newId(), picked.name, picked.uri);
     return kept ? { name: picked.name, mime: picked.mime, size: kept.size || picked.size, uri: kept.uri } : null;
@@ -735,6 +317,7 @@ export class WizzleStore {
 
   // Replaces everything with what the cache holds for this pairing, before the bridge says anything.
   hydrate(pairingId: string | null): void {
+    this.loaded = true;
     this.reset();
     this.pairingId = pairingId;
     if (!pairingId) return;
@@ -756,14 +339,16 @@ export class WizzleStore {
       const profile = toProfile(raw);
       if (profile) this.profiles.set(agentId, profile);
     }
+    this.profileView = Object.fromEntries(this.profiles);
     for (const stored of cached.elements) this.elements.set(elementKey(stored.agentId, stored.element.id), stored);
+    this.sortElements();
     for (const [conv, data] of cached.conversations) {
       const questions = data.questions.filter((open) => !expired(open.question.expiresAt, now));
       const approvals = data.approvals.filter((open) => !expired(open.approval.expiresAt, now));
-      for (const open of questions) this.questionHome.set(open.question.questionId, conv);
-      for (const open of approvals) this.questionHome.set(open.approval.approvalId, conv);
+      for (const open of questions) this.promptHome.set(open.question.questionId, conv);
+      for (const open of approvals) this.promptHome.set(open.approval.approvalId, conv);
       const messages = data.messages.filter((entry) => !entry.msgId.includes(ECHO_MARK)).map(unconfirmed);
-      this.convs.set(conv, { ...emptyConversation(conv), messages, questions, approvals });
+      this.convs.set(conv, { ...emptyConversation(), messages, questions, approvals });
     }
     this.changed();
   }
@@ -772,6 +357,11 @@ export class WizzleStore {
   forgetPairing(pairingId: string): void {
     this.cache?.forgetPairing(pairingId);
     this.files?.forgetPairing(pairingId);
+  }
+
+  // Pending cache rows reach disk now, for when iOS is about to suspend the app.
+  flush(): void {
+    this.cache?.flush();
   }
 
   answer(conv: string, questionId: string, value: string | string[]): void {
@@ -840,6 +430,7 @@ export class WizzleStore {
 
   // Once per connection, and again with force: the library may have been out of reach the first time.
   loadTemplates(force = false): void {
+    this.load();
     if ((this.templatesRequested && !force) || !this.hello?.capabilities.templates) return;
     const packetId = this.link.send({ t: 'templates' });
     if (!packetId) return;
@@ -849,12 +440,14 @@ export class WizzleStore {
 
   // Asked each time a screen shows keys, since the vault also changes on the host.
   loadSecrets(): void {
+    this.load();
     if (!this.hello?.capabilities.keys) return;
     const packetId = this.link.send({ t: 'secrets' });
     if (packetId) this.track(packetId, { t: 'secrets' });
   }
 
   loadAgentSecrets(agentId: string): void {
+    this.load();
     if (!this.hello?.capabilities.keys) return;
     const packetId = this.link.send({ t: 'agent_secrets', agentId });
     if (packetId) this.track(packetId, { t: 'agent_secrets' });
@@ -884,6 +477,7 @@ export class WizzleStore {
 
   // One create at a time: a second tap while the host is working is refused, not queued.
   createAgent(request: CreateRequest): CreateState | null {
+    this.load();
     if (this.create?.state === 'sending') return null;
     const name = request.name.trim();
     const purpose = request.purpose?.trim();
@@ -913,16 +507,18 @@ export class WizzleStore {
 
   // Only wizzle sees a nickname or a look; an empty profile brings back the host's name and the face from the id.
   setProfile(agentId: string, profile: AgentProfile): void {
+    this.load();
     const next = toProfile(profile);
     if (JSON.stringify(next) === JSON.stringify(this.profiles.get(agentId) ?? null)) return;
     if (next) this.profiles.set(agentId, next);
     else this.profiles.delete(agentId);
-    this.persistProfiles();
+    this.profilesChanged();
     this.changed();
   }
 
   // Called while a chat is on screen, so what the agent sent there so far is read.
   markRead(conv: string): void {
+    this.load();
     const newest = newestAgentAt(this.convs.get(conv)?.messages ?? []);
     if (newest === undefined || newest <= this.readMark(conv)) return;
     this.readMarks.set(conv, newest);
@@ -945,6 +541,7 @@ export class WizzleStore {
   }
 
   dismiss(id: string, conv?: string): void {
+    this.load();
     if (conv === undefined) {
       this.notices = this.notices.filter((notice) => notice.id !== id);
       this.changed();
@@ -955,16 +552,21 @@ export class WizzleStore {
   }
 
   reset(): void {
-    for (const pending of this.topicRequests.values()) pending.reject(OFFLINE);
-    this.topicRequests.clear();
+    for (const pending of this.requests.values()) pending.reject(OFFLINE);
+    this.requests.clear();
     this.convs.clear();
     this.sent.clear();
-    this.questionHome.clear();
+    this.promptHome.clear();
     this.historyBefore.clear();
     this.elements.clear();
+    this.elementList = [];
     this.readMarks.clear();
     this.readFloor = 0;
     this.profiles.clear();
+    this.profileView = {};
+    this.viewCache.clear();
+    this.rowCache.clear();
+    this.list = null;
     this.agents = [];
     this.catalog = [];
     this.templates = [];
@@ -982,6 +584,24 @@ export class WizzleStore {
   destroy(): void {
     this.detach();
     this.listeners.clear();
+  }
+
+  // The first touch brings in the cache for the current pairing; without one there is nothing to load.
+  private load(): void {
+    if (this.loaded) return;
+    this.loaded = true;
+    const pairingId = this.pairingOf?.() ?? null;
+    if (pairingId) this.hydrate(pairingId);
+  }
+
+  // The writer's view of a conversation: it exists from here on, so patches have somewhere to land.
+  private conversation(conv: string): ConversationState {
+    this.load();
+    const existing = this.convs.get(conv);
+    if (existing) return existing;
+    const fresh = emptyConversation();
+    this.convs.set(conv, fresh);
+    return fresh;
   }
 
   private requestHistory(conv: string, before?: string): void {
@@ -1025,22 +645,23 @@ export class WizzleStore {
     this.edit(conv, msgId, { local: { packetId: null, failure } });
   }
 
-  private ask(message: WizzleMessage, make: (settle: Settle) => TopicPending): Promise<string> {
+  private ask(message: WizzleMessage, make: (settle: Settle) => PendingRequest): Promise<string> {
+    this.load();
     return new Promise<string>((resolve, reject) => {
       const packetId = this.link.send(message);
       if (!packetId) {
         reject(OFFLINE);
         return;
       }
-      this.topicRequests.set(packetId, make({ resolve, reject }));
+      this.requests.set(packetId, make({ resolve, reject }));
     });
   }
 
-  private settleTopics(match: (pending: TopicPending) => boolean, conv: string): void {
-    for (const [packetId, pending] of [...this.topicRequests]) {
+  private settle(match: (pending: PendingRequest) => boolean, value: string): void {
+    for (const [packetId, pending] of [...this.requests]) {
       if (!match(pending)) continue;
-      this.topicRequests.delete(packetId);
-      pending.resolve(conv);
+      this.requests.delete(packetId);
+      pending.resolve(value);
     }
   }
 
@@ -1048,9 +669,10 @@ export class WizzleStore {
   private forget(conv: string): void {
     this.convs.delete(conv);
     this.historyBefore.delete(conv);
+    this.rowCache.delete(conv);
     if (this.readMarks.delete(conv)) this.persistRead();
-    for (const [questionId, home] of [...this.questionHome]) {
-      if (home === conv) this.questionHome.delete(questionId);
+    for (const [promptId, home] of [...this.promptHome]) {
+      if (home === conv) this.promptHome.delete(promptId);
     }
     if (!this.pairingId) return;
     this.cache?.forgetConversation(this.pairingId, conv);
@@ -1060,11 +682,11 @@ export class WizzleStore {
   // A cleared chat keeps its place in the list and starts over from an empty transcript.
   private wipe(conv: string): void {
     this.historyBefore.delete(conv);
-    for (const [questionId, home] of [...this.questionHome]) {
-      if (home === conv) this.questionHome.delete(questionId);
+    for (const [promptId, home] of [...this.promptHome]) {
+      if (home === conv) this.promptHome.delete(promptId);
     }
     if (this.pairingId) this.files?.forgetConversation(this.pairingId, conv);
-    this.patch(conv, { ...emptyConversation(conv), requested: true });
+    this.patch(conv, { ...emptyConversation(), requested: true });
   }
 
   // The chat row links to the stored element; an older copy of the same id never replaces a newer one.
@@ -1085,9 +707,14 @@ export class WizzleStore {
     const existing = this.elements.get(key);
     if (!existing || existing.receivedAt <= at) {
       this.elements.set(key, { agentId, conv, receivedAt: at, element });
-      if (this.pairingId) this.cache?.saveElements(this.pairingId, [...this.elements.values()]);
+      this.sortElements();
+      if (this.pairingId) this.cache?.saveElements(this.pairingId, this.elementList);
     }
     return { element: { agentId, id: element.id } };
+  }
+
+  private sortElements(): void {
+    this.elementList = [...this.elements.values()].sort((a, b) => b.receivedAt - a.receivedAt);
   }
 
   private readMark(conv: string): number {
@@ -1107,8 +734,9 @@ export class WizzleStore {
     }
   }
 
-  private persistProfiles(): void {
-    if (this.pairingId) this.cache?.saveProfiles(this.pairingId, Object.fromEntries(this.profiles));
+  private profilesChanged(): void {
+    this.profileView = Object.fromEntries(this.profiles);
+    if (this.pairingId) this.cache?.saveProfiles(this.pairingId, this.profileView);
   }
 
   private persistMeta(): void {
@@ -1171,19 +799,12 @@ export class WizzleStore {
   }
 
   private receive(packet: DecodedPacket): void {
+    this.load();
     const h = packet.header;
     const now = this.now();
     switch (h.t) {
       case 'hello': {
-        this.hello = {
-          t: 'hello',
-          protocol: num(h['protocol']) ?? 1,
-          runtime: str(h['runtime']) ?? 'unknown',
-          bridgeVersion: str(h['bridgeVersion']) ?? '0',
-          host: str(h['host']) ?? '',
-          capabilities: toCapabilities(h['capabilities']),
-          ...(str(h['runtimeVersion']) !== null && { runtimeVersion: str(h['runtimeVersion']) as string }),
-        };
+        this.hello = toHello(h);
         // A new connection starts with nothing running; the sync reply that follows reports what still is.
         for (const [id, state] of this.convs) if (state.activity) this.convs.set(id, { ...state, activity: null });
         this.templatesRequested = false;
@@ -1206,7 +827,7 @@ export class WizzleStore {
         this.agents = at === -1 ? [...this.agents, agent] : this.agents.map((a) => (a.id === agent.id ? agent : a));
         this.resolveCreate(agent);
         // Matching the status keeps an unrelated agent update from answering a pause or resume early.
-        this.settleTopics(
+        this.settle(
           (pending) =>
             'agentId' in pending &&
             pending.agentId === agent.id &&
@@ -1223,10 +844,11 @@ export class WizzleStore {
         const agentId = str(h['agentId']);
         if (!agentId) return void this.drop();
         this.agents = this.agents.filter((a) => a.id !== agentId);
-        if (this.profiles.delete(agentId)) this.persistProfiles();
+        this.viewCache.delete(agentId);
+        if (this.profiles.delete(agentId)) this.profilesChanged();
         for (const conv of this.catalog) if (conv.agentId === agentId) this.forget(conv.id);
         this.catalog = this.catalog.filter((c) => c.agentId !== agentId);
-        this.settleTopics((pending) => pending.kind === 'deleteAgent' && pending.agentId === agentId, agentId);
+        this.settle((pending) => pending.kind === 'deleteAgent' && pending.agentId === agentId, agentId);
         this.persistMeta();
         this.changed();
         return;
@@ -1248,7 +870,7 @@ export class WizzleStore {
         if (!conversation) return void this.drop();
         const at = this.catalog.findIndex((c) => c.id === conversation.id);
         this.catalog = at === -1 ? [...this.catalog, conversation] : this.catalog.map((c) => (c.id === conversation.id ? conversation : c));
-        this.settleTopics(
+        this.settle(
           (pending) =>
             (pending.kind === 'create' && pending.agentId === conversation.agentId && pending.title === conversation.title) ||
             (pending.kind === 'rename' && pending.conv === conversation.id),
@@ -1263,7 +885,7 @@ export class WizzleStore {
         if (!conv) return void this.drop();
         this.catalog = this.catalog.filter((c) => c.id !== conv);
         this.forget(conv);
-        this.settleTopics((pending) => pending.kind === 'delete' && pending.conv === conv, conv);
+        this.settle((pending) => pending.kind === 'delete' && pending.conv === conv, conv);
         this.persistMeta();
         this.changed();
         return;
@@ -1294,7 +916,7 @@ export class WizzleStore {
         if (str(h['format']) !== null) change.format = toFormat(h['format']);
         if (this.edit(conv, msgId, change)) return;
         // An edit of an open question is its resolution line, which question_resolved reports.
-        if (this.questionHome.has(msgId)) return;
+        if (this.promptHome.has(msgId)) return;
         this.upsert(conv, { conv, msgId, role: 'agent', text, format: toFormat(h['format']), at: now, kind: 'text', edited: true });
         return;
       }
@@ -1347,7 +969,7 @@ export class WizzleStore {
       case 'question': {
         const question = toQuestion(h['question']);
         if (!question) return void this.drop();
-        this.questionHome.set(question.questionId, question.conv);
+        this.promptHome.set(question.questionId, question.conv);
         const state = this.conversation(question.conv);
         const open: OpenQuestion = { question };
         const at = state.questions.findIndex((q) => q.question.questionId === question.questionId);
@@ -1358,8 +980,8 @@ export class WizzleStore {
       case 'question_resolved': {
         const questionId = str(h['questionId']);
         if (!questionId) return void this.drop();
-        const conv = this.questionHome.get(questionId);
-        this.questionHome.delete(questionId);
+        const conv = this.promptHome.get(questionId);
+        this.promptHome.delete(questionId);
         if (!conv) return;
         const state = this.conversation(conv);
         const questions = state.questions.filter((q) => q.question.questionId !== questionId);
@@ -1381,7 +1003,7 @@ export class WizzleStore {
       case 'approval': {
         const approval = toApproval(h['approval']);
         if (!approval) return void this.drop();
-        this.questionHome.set(approval.approvalId, approval.conv);
+        this.promptHome.set(approval.approvalId, approval.conv);
         const state = this.conversation(approval.conv);
         const open: OpenApproval = { approval };
         const at = state.approvals.findIndex((a) => a.approval.approvalId === approval.approvalId);
@@ -1392,8 +1014,8 @@ export class WizzleStore {
       case 'approval_resolved': {
         const approvalId = str(h['approvalId']);
         if (!approvalId) return void this.drop();
-        const conv = this.questionHome.get(approvalId);
-        this.questionHome.delete(approvalId);
+        const conv = this.promptHome.get(approvalId);
+        this.promptHome.delete(approvalId);
         if (!conv) return;
         const state = this.conversation(conv);
         this.patch(conv, { approvals: state.approvals.filter((a) => a.approval.approvalId !== approvalId) });
@@ -1417,7 +1039,7 @@ export class WizzleStore {
         // The bridge clears a chat by dropping its session, so the transcript goes with it.
         if (event === 'cleared') {
           this.wipe(conv);
-          this.settleTopics((pending) => pending.kind === 'clear' && pending.conv === conv, conv);
+          this.settle((pending) => pending.kind === 'clear' && pending.conv === conv, conv);
           return;
         }
         this.upsert(conv, {
@@ -1465,9 +1087,9 @@ export class WizzleStore {
           ? list.map((one) => (one.id === secret.id ? secret : one))
           : [...list, secret];
         const ref = str(h['ref']);
-        const pending = ref ? this.topicRequests.get(ref) : undefined;
+        const pending = ref ? this.requests.get(ref) : undefined;
         if (ref && pending && (pending.kind === 'createSecret' || pending.kind === 'updateSecret')) {
-          this.topicRequests.delete(ref);
+          this.requests.delete(ref);
           if (pending.kind === 'createSecret') this.newestSecret = { id: secret.id, seq: (this.newestSecret?.seq ?? 0) + 1 };
           pending.resolve(secret.id);
         }
@@ -1481,7 +1103,7 @@ export class WizzleStore {
         this.agentSecrets = Object.fromEntries(
           Object.entries(this.agentSecrets).map(([agentId, ids]) => [agentId, ids.filter((id) => id !== secretId)]),
         );
-        this.settleTopics((pending) => pending.kind === 'deleteSecret' && pending.secretId === secretId, secretId);
+        this.settle((pending) => pending.kind === 'deleteSecret' && pending.secretId === secretId, secretId);
         this.changed();
         return;
       }
@@ -1492,7 +1114,7 @@ export class WizzleStore {
         const ids = raw.filter((id): id is string => typeof id === 'string');
         this.agentSecrets = { ...this.agentSecrets, [agentId]: ids };
         this.keysError = null;
-        this.settleTopics(
+        this.settle(
           (pending) =>
             (pending.kind === 'attach' && pending.agentId === agentId && ids.includes(pending.secretId)) ||
             (pending.kind === 'detach' && pending.agentId === agentId && !ids.includes(pending.secretId)),
@@ -1505,10 +1127,10 @@ export class WizzleStore {
         const code = str(h['code']) ?? 'error';
         const message = str(h['message']) ?? 'The bridge rejected that.';
         const ref = str(h['ref']);
-        const topic = ref ? this.topicRequests.get(ref) : undefined;
-        if (ref && topic) {
-          this.topicRequests.delete(ref);
-          topic.reject({ code, message });
+        const request = ref ? this.requests.get(ref) : undefined;
+        if (ref && request) {
+          this.requests.delete(ref);
+          request.reject({ code, message });
           return;
         }
         if (ref && this.create?.packetId === ref && this.create.state === 'sending') {
@@ -1596,31 +1218,49 @@ export class WizzleStore {
     this.dropped += 1;
   }
 
-  // A nickname replaces the host's name everywhere wizzle shows one.
+  // A nickname replaces the host's name everywhere wizzle shows one. The view holds while agent and nickname do.
   private shown(agent: Agent): AgentView {
     const nickname = this.profiles.get(agent.id)?.nickname;
-    return nickname && nickname !== agent.name ? { ...agent, name: nickname, hostName: agent.name } : agent;
+    const cached = this.viewCache.get(agent.id);
+    if (cached && cached.agent === agent && cached.nickname === nickname) return cached.view;
+    const view = nickname && nickname !== agent.name ? { ...agent, name: nickname, hostName: agent.name } : agent;
+    this.viewCache.set(agent.id, { agent, nickname, view });
+    return view;
+  }
+
+  private agentViews(): AgentView[] {
+    const views = this.agents.map((agent) => this.shown(agent));
+    const previous = this.list?.agents;
+    if (previous && previous.length === views.length && previous.every((view, i) => view === views[i])) return previous;
+    return views;
   }
 
   private row(conv: Conversation, agents: AgentView[]): ConversationRow {
     const state = this.convs.get(conv.id);
-    const last = state?.messages[state.messages.length - 1];
-    const lastAt = Math.max(conv.lastAt ?? 0, last?.at ?? 0);
     const agent = agents.find((a) => a.id === conv.agentId) ?? null;
-    const repliedAt = state ? repliedAtOf(state.messages) : undefined;
-    return {
+    const mark = this.readMark(conv.id);
+    const cached = this.rowCache.get(conv.id);
+    if (cached && cached.source.conv === conv && cached.source.state === state && cached.source.agent === agent && cached.source.mark === mark) {
+      return cached.row;
+    }
+    const last = state?.messages[state.messages.length - 1] ?? null;
+    const lastAt = Math.max(conv.lastAt ?? 0, last?.at ?? 0);
+    const repliedAt = state ? newestAgentAt(state.messages) : undefined;
+    const row: ConversationRow = {
       ...conv,
       // The default conversation is titled with the agent's name, so a nickname retitles it too.
       ...(agent?.hostName !== undefined && conv.topic !== true && { title: agent.name }),
       ...(lastAt > 0 && { lastAt }),
       ...(repliedAt !== undefined && { repliedAt }),
       agent,
-      preview: last ? previewOf(last) : '',
+      last,
       activity: state?.activity ?? null,
       questions: (state?.questions.length ?? 0) + (state?.approvals.length ?? 0),
-      unread: state ? unreadOf(state.messages, this.readMark(conv.id)) : 0,
+      unread: state ? unreadOf(state.messages, mark) : 0,
       topic: conv.topic === true,
     };
+    this.rowCache.set(conv.id, { source: { conv, state, agent, mark }, row });
+    return row;
   }
 
   // The default conversation leads its agent, topics follow it newest first, System sits last.
@@ -1641,16 +1281,26 @@ export class WizzleStore {
     return groups.sort((a, b) => Number(isSystem(a)) - Number(isSystem(b)) || newest(b) - newest(a));
   }
 
+  // The sorted list and its groups are rebuilt only when a row or an agent view changed.
+  private lists(): ListCache {
+    const agents = this.agentViews();
+    const rows = this.catalog.map((conv) => this.row(conv, agents));
+    const last = this.list;
+    if (last && last.agents === agents && last.rows.length === rows.length && last.rows.every((row, i) => row === rows[i])) return last;
+    const conversations = rows.slice().sort((a, b) => (b.lastAt ?? 0) - (a.lastAt ?? 0));
+    this.list = { agents, rows, conversations, agentGroups: this.group(conversations, agents) };
+    return this.list;
+  }
+
   private compute(): StoreSnapshot {
-    const agents = this.agents.map((agent) => this.shown(agent));
-    const conversations = this.catalog.map((conv) => this.row(conv, agents)).sort((a, b) => (b.lastAt ?? 0) - (a.lastAt ?? 0));
+    const { agents, conversations, agentGroups } = this.lists();
     return {
       hello: this.hello,
       capabilities: this.hello?.capabilities ?? null,
       agents,
-      profiles: Object.fromEntries(this.profiles),
+      profiles: this.profileView,
       conversations,
-      agentGroups: this.group(conversations, agents),
+      agentGroups,
       templates: this.templates,
       secrets: this.secrets,
       agentSecrets: this.agentSecrets,
@@ -1658,12 +1308,13 @@ export class WizzleStore {
       newestSecret: this.newestSecret,
       create: this.create,
       notices: this.notices,
-      elements: [...this.elements.values()].sort((a, b) => b.receivedAt - a.receivedAt),
+      elements: this.elementList,
     };
   }
 
+  // The snapshot is dropped, not rebuilt: the next read computes it, and only what changed is rebuilt.
   private changed(): void {
-    this.snapshot = this.compute();
+    this.snapshot = null;
     for (const listener of this.listeners) listener();
   }
 }

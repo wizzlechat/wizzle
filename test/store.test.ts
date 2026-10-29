@@ -15,7 +15,9 @@ import {
 import type { FileStore } from '../src/files/types.ts';
 import { RelayClient } from '../src/relay/client.ts';
 import type { CachedConversation, CachedMeta, CachedPairing, ReadMarks, StoreCache } from '../src/store/cache.ts';
-import { WizzleStore, attachmentFailure, plainMessage, type StoreLink } from '../src/store/store.ts';
+import { WizzleStore, type StoreLink } from '../src/store/store.ts';
+import { attachmentFailure } from '../src/store/validate.ts';
+import { plainMessage, previewOf } from '../src/ui/plain.ts';
 import type { AgentProfile, Attachment, ChatEntry, SendFailure, StoredElement } from '../src/store/types.ts';
 import { FakeBridge, FakeRelay, newPairing, wizzleKeys, wizzleSecrets, silentLog, until } from './fake-relay.ts';
 
@@ -241,12 +243,12 @@ test('an incoming message lands in the conversation and in the row preview', asy
   const w = await wired();
   catalog(w.bridge);
   w.bridge.send({ t: 'message', message: message('a1', 2000, 'All 20 passed.\nDetails follow.') });
-  await until(() => w.store.conversation(CONV).messages.length === 1);
-  const entry = w.store.conversation(CONV).messages[0];
+  await until(() => w.store.peek(CONV).messages.length === 1);
+  const entry = w.store.peek(CONV).messages[0];
   assert.equal(entry?.role, 'agent');
   assert.equal(entry?.format, 'markdown');
   const row = w.store.getSnapshot().conversations[0];
-  assert.equal(row?.preview, 'All 20 passed. Details follow.');
+  assert.equal(previewOf(row?.last), 'All 20 passed. Details follow.');
   assert.equal(row?.lastAt, 2000);
   w.stop();
 });
@@ -256,11 +258,11 @@ test('the row preview drops the markup of agent markdown but keeps your own text
   catalog(w.bridge);
   const text = '## Done\n\n**All 20** passed, see `npm test` and [the log](https://x.test).\n\n- one\n- [ ] _two_\n\n> \\*quoted\\*';
   w.bridge.send({ t: 'message', message: message('a1', 2000, text) });
-  await until(() => w.store.conversation(CONV).messages.length === 1);
-  assert.equal(w.store.getSnapshot().conversations[0]?.preview, 'Done All 20 passed, see npm test and the log. one two *quoted*');
+  await until(() => w.store.peek(CONV).messages.length === 1);
+  assert.equal(previewOf(w.store.getSnapshot().conversations[0]?.last), 'Done All 20 passed, see npm test and the log. one two *quoted*');
   w.bridge.send({ t: 'message', message: message('u1', 3000, '**mine**', 'user') });
-  await until(() => w.store.conversation(CONV).messages.length === 2);
-  assert.equal(w.store.getSnapshot().conversations[0]?.preview, '**mine**');
+  await until(() => w.store.peek(CONV).messages.length === 2);
+  assert.equal(previewOf(w.store.getSnapshot().conversations[0]?.last), '**mine**');
   w.stop();
 });
 
@@ -270,8 +272,8 @@ test('messages stay ordered by time whatever order they arrive in', async () => 
   w.bridge.send({ t: 'message', message: message('a2', 3000, 'second') });
   w.bridge.send({ t: 'message', message: message('a1', 1500, 'first') });
   w.bridge.send({ t: 'message', message: message('a3', 4000, 'third') });
-  await until(() => w.store.conversation(CONV).messages.length === 3);
-  assert.deepEqual(w.store.conversation(CONV).messages.map((m) => m.text), ['first', 'second', 'third']);
+  await until(() => w.store.peek(CONV).messages.length === 3);
+  assert.deepEqual(w.store.peek(CONV).messages.map((m) => m.text), ['first', 'second', 'third']);
   w.stop();
 });
 
@@ -280,7 +282,7 @@ test('send echoes locally at once and reaches the bridge with the same msgId', a
   catalog(w.bridge);
   const msgId = w.store.send(CONV, '  run the tests  ');
   assert.ok(msgId);
-  const entry = w.store.conversation(CONV).messages[0];
+  const entry = w.store.peek(CONV).messages[0];
   assert.equal(entry?.text, 'run the tests');
   assert.equal(entry?.role, 'user');
   assert.ok(entry?.local?.packetId);
@@ -298,8 +300,8 @@ test('an error with a ref marks that message failed and retry sends a fresh msgI
   const msgId = w.store.send('wizzle:system', 'hello');
   const sent = await w.bridge.nextOf('send');
   w.bridge.send({ t: 'error', ref: sent.header.id, code: 'read_only', message: 'No agent is wired to the System conversation' });
-  await until(() => w.store.conversation('wizzle:system').messages[0]?.local?.failure !== undefined);
-  const failed = w.store.conversation('wizzle:system').messages[0];
+  await until(() => w.store.peek('wizzle:system').messages[0]?.local?.failure !== undefined);
+  const failed = w.store.peek('wizzle:system').messages[0];
   assert.equal(failed?.local?.failure?.code, 'read_only');
   assert.equal(w.store.getSnapshot().notices.length, 0);
 
@@ -307,7 +309,7 @@ test('an error with a ref marks that message failed and retry sends a fresh msgI
   assert.notEqual(retried, msgId);
   const again = await w.bridge.nextOf('send');
   assert.equal(again.header['msgId'], retried);
-  const messages = w.store.conversation('wizzle:system').messages;
+  const messages = w.store.peek('wizzle:system').messages;
   assert.equal(messages.length, 1);
   assert.equal(messages[0]?.local?.failure, undefined);
   w.stop();
@@ -318,7 +320,7 @@ test('discard removes a failed message', async () => {
   const msgId = w.store.send(CONV, 'nope') as string;
   await w.bridge.nextOf('send');
   w.store.discard(CONV, msgId);
-  assert.equal(w.store.conversation(CONV).messages.length, 0);
+  assert.equal(w.store.peek(CONV).messages.length, 0);
   w.stop();
 });
 
@@ -340,13 +342,13 @@ test('an error for a history request notices that conversation and stops the spi
   await until(() => w.store.getSnapshot().capabilities !== null);
   w.store.open(CONV);
   const asked = await w.bridge.nextOf('history');
-  assert.equal(w.store.conversation(CONV).loading, true);
+  assert.equal(w.store.peek(CONV).loading, true);
   w.bridge.send({ t: 'error', ref: asked.header.id, code: 'unknown_conv', message: 'No such conversation' });
-  await until(() => w.store.conversation(CONV).notices.length === 1);
-  assert.equal(w.store.conversation(CONV).loading, false);
+  await until(() => w.store.peek(CONV).notices.length === 1);
+  assert.equal(w.store.peek(CONV).loading, false);
   assert.equal(w.store.getSnapshot().notices.length, 0);
-  w.store.dismiss(w.store.conversation(CONV).notices[0]?.id as string, CONV);
-  assert.equal(w.store.conversation(CONV).notices.length, 0);
+  w.store.dismiss(w.store.peek(CONV).notices[0]?.id as string, CONV);
+  assert.equal(w.store.peek(CONV).notices.length, 0);
   w.stop();
 });
 
@@ -360,24 +362,24 @@ test('history is asked for once on open, pages back, and stops when a page repea
   assert.equal(asked.header['limit'], 50);
   assert.equal(asked.header['before'], undefined);
   w.bridge.send({ t: 'history', conv: CONV, messages: [message('h2', 2000, 'older'), message('h3', 3000, 'newer')], hasMore: true });
-  await until(() => w.store.conversation(CONV).messages.length === 2);
-  assert.equal(w.store.conversation(CONV).hasMore, true);
-  assert.equal(w.store.conversation(CONV).loading, false);
+  await until(() => w.store.peek(CONV).messages.length === 2);
+  assert.equal(w.store.peek(CONV).hasMore, true);
+  assert.equal(w.store.peek(CONV).loading, false);
 
   w.store.loadOlder(CONV);
   const older = await w.bridge.nextOf('history');
   assert.equal(older.header['before'], 'h2');
   w.bridge.send({ t: 'history', conv: CONV, messages: [message('h1', 1000, 'oldest')], hasMore: true });
-  await until(() => w.store.conversation(CONV).messages.length === 3);
-  assert.deepEqual(w.store.conversation(CONV).messages.map((m) => m.text), ['oldest', 'older', 'newer']);
+  await until(() => w.store.peek(CONV).messages.length === 3);
+  assert.deepEqual(w.store.peek(CONV).messages.map((m) => m.text), ['oldest', 'older', 'newer']);
 
   w.store.loadOlder(CONV);
   await w.bridge.nextOf('history');
   w.bridge.send({ t: 'history', conv: CONV, messages: [message('h1', 1000, 'oldest')], hasMore: true });
-  await until(() => w.store.conversation(CONV).hasMore === false);
-  assert.equal(w.store.conversation(CONV).messages.length, 3);
+  await until(() => w.store.peek(CONV).hasMore === false);
+  assert.equal(w.store.peek(CONV).messages.length, 3);
   w.store.loadOlder(CONV);
-  assert.equal(w.store.conversation(CONV).loading, false);
+  assert.equal(w.store.peek(CONV).loading, false);
   w.stop();
 });
 
@@ -389,8 +391,8 @@ test('history does not duplicate a message wizzle already echoed', async () => {
   w.store.open(CONV);
   await w.bridge.nextOf('history');
   w.bridge.send({ t: 'history', conv: CONV, messages: [message('nanoclaw-99', 1200, 'run the tests', 'user')], hasMore: false });
-  await until(() => w.store.conversation(CONV).loading === false);
-  const messages = w.store.conversation(CONV).messages;
+  await until(() => w.store.peek(CONV).loading === false);
+  const messages = w.store.peek(CONV).messages;
   assert.equal(messages.length, 1);
   assert.ok(messages[0]?.local);
   w.stop();
@@ -408,8 +410,8 @@ test('history is not requested when the bridge says it has none', async () => {
   });
   await until(() => w.store.getSnapshot().capabilities?.history === false);
   w.store.open(CONV);
-  assert.equal(w.store.conversation(CONV).requested, false);
-  assert.equal(w.store.conversation(CONV).loading, false);
+  assert.equal(w.store.peek(CONV).requested, false);
+  assert.equal(w.store.peek(CONV).loading, false);
   w.stop();
 });
 
@@ -417,16 +419,16 @@ test('delta, edit and reaction change a message in place', async () => {
   const w = await wired();
   catalog(w.bridge);
   w.bridge.send({ t: 'message', message: message('a1', 1000, 'Running') });
-  await until(() => w.store.conversation(CONV).messages.length === 1);
+  await until(() => w.store.peek(CONV).messages.length === 1);
   w.bridge.send({ t: 'delta', conv: CONV, msgId: 'a1', append: ' the tests' });
-  await until(() => w.store.conversation(CONV).messages[0]?.text === 'Running the tests');
+  await until(() => w.store.peek(CONV).messages[0]?.text === 'Running the tests');
   w.bridge.send({ t: 'edit', conv: CONV, msgId: 'a1', text: 'All 20 passed', terminal: { resolution: 'done' } });
-  await until(() => w.store.conversation(CONV).messages[0]?.edited === true);
-  assert.equal(w.store.conversation(CONV).messages[0]?.resolution, 'done');
+  await until(() => w.store.peek(CONV).messages[0]?.edited === true);
+  assert.equal(w.store.peek(CONV).messages[0]?.resolution, 'done');
   w.bridge.send({ t: 'reaction', conv: CONV, msgId: 'a1', emoji: '✅', op: 'add' });
-  await until(() => w.store.conversation(CONV).messages[0]?.reactions?.length === 1);
+  await until(() => w.store.peek(CONV).messages[0]?.reactions?.length === 1);
   w.bridge.send({ t: 'reaction', conv: CONV, msgId: 'a1', emoji: '✅', op: 'remove' });
-  await until(() => w.store.conversation(CONV).messages[0]?.reactions?.length === 0);
+  await until(() => w.store.peek(CONV).messages[0]?.reactions?.length === 0);
   w.stop();
 });
 
@@ -434,8 +436,8 @@ test('a delta for an unknown message starts one', async () => {
   const w = await wired();
   catalog(w.bridge);
   w.bridge.send({ t: 'delta', conv: CONV, msgId: 'ghost', append: 'partial' });
-  await until(() => w.store.conversation(CONV).messages.length === 1);
-  assert.equal(w.store.conversation(CONV).messages[0]?.text, 'partial');
+  await until(() => w.store.peek(CONV).messages.length === 1);
+  assert.equal(w.store.peek(CONV).messages[0]?.text, 'partial');
   w.stop();
 });
 
@@ -444,14 +446,14 @@ test('cards and files become entries the UI can render', async () => {
   catalog(w.bridge);
   w.bridge.send({ t: 'card', conv: CONV, msgId: 'c1', card: { kind: 'diff' }, fallbackText: '3 files changed', at: 5000 });
   w.bridge.send({ t: 'file', conv: CONV, msgId: 'f1', file: { name: 'log.txt', mime: 'text/plain', size: 12 }, caption: 'the log', at: 6000 }, new Uint8Array(12));
-  await until(() => w.store.conversation(CONV).messages.length === 2);
-  const [card, file] = w.store.conversation(CONV).messages;
+  await until(() => w.store.peek(CONV).messages.length === 2);
+  const [card, file] = w.store.peek(CONV).messages;
   assert.equal(card?.kind, 'card');
   assert.equal(card?.text, '3 files changed');
   assert.deepEqual(card?.card, { kind: 'diff' });
   assert.equal(file?.kind, 'file');
   assert.equal(file?.file?.name, 'log.txt');
-  assert.equal(w.store.getSnapshot().conversations[0]?.preview, 'the log');
+  assert.equal(previewOf(w.store.getSnapshot().conversations[0]?.last), 'the log');
   w.stop();
 });
 
@@ -459,11 +461,11 @@ test('activity is held per conversation and idle clears it', async () => {
   const w = await wired();
   catalog(w.bridge);
   w.bridge.send({ t: 'activity', activity: { conv: CONV, state: 'tool', tool: 'Bash', label: 'npm test', startedAt: 10 } });
-  await until(() => w.store.conversation(CONV).activity !== null);
-  assert.equal(w.store.conversation(CONV).activity?.label, 'npm test');
+  await until(() => w.store.peek(CONV).activity !== null);
+  assert.equal(w.store.peek(CONV).activity?.label, 'npm test');
   await until(() => w.store.getSnapshot().conversations[0]?.activity?.tool === 'Bash');
   w.bridge.send({ t: 'activity', activity: { conv: CONV, state: 'idle' } });
-  await until(() => w.store.conversation(CONV).activity === null);
+  await until(() => w.store.peek(CONV).activity === null);
   w.stop();
 });
 
@@ -481,16 +483,16 @@ test('a question is answered and question_resolved closes it', async () => {
       expiresAt: 9999,
     },
   });
-  await until(() => w.store.conversation(CONV).questions.length === 1);
+  await until(() => w.store.peek(CONV).questions.length === 1);
   assert.equal(w.store.getSnapshot().conversations[0]?.questions, 1);
   w.store.answer(CONV, 'q1', 'yes');
-  assert.equal(w.store.conversation(CONV).questions[0]?.answered, 'yes');
+  assert.equal(w.store.peek(CONV).questions[0]?.answered, 'yes');
   const answered = await w.bridge.nextOf('answer');
   assert.equal(answered.header['questionId'], 'q1');
   assert.equal(answered.header['value'], 'yes');
   w.bridge.send({ t: 'question_resolved', questionId: 'q1', value: 'yes', by: 'wizzle' });
-  await until(() => w.store.conversation(CONV).questions.length === 0);
-  assert.equal(w.store.conversation(CONV).messages.at(-1)?.text, 'Answered by wizzle: yes');
+  await until(() => w.store.peek(CONV).questions.length === 0);
+  assert.equal(w.store.peek(CONV).messages.at(-1)?.text, 'Answered by wizzle: yes');
   w.stop();
 });
 
@@ -501,15 +503,15 @@ test('an approval is resolved and closes the same way', async () => {
     t: 'approval',
     approval: { conv: 'wizzle:system', approvalId: 'ap1', title: 'Run rm -rf', command: 'rm -rf build', decisions: ['allow', 'deny', 'allow_always'] },
   });
-  await until(() => w.store.conversation('wizzle:system').approvals.length === 1);
+  await until(() => w.store.peek('wizzle:system').approvals.length === 1);
   w.store.decide('wizzle:system', 'ap1', 'deny');
-  assert.equal(w.store.conversation('wizzle:system').approvals[0]?.decided, 'deny');
+  assert.equal(w.store.peek('wizzle:system').approvals[0]?.decided, 'deny');
   const resolved = await w.bridge.nextOf('resolve');
   assert.equal(resolved.header['approvalId'], 'ap1');
   assert.equal(resolved.header['decision'], 'deny');
   w.bridge.send({ t: 'approval_resolved', approvalId: 'ap1', decision: 'deny' });
-  await until(() => w.store.conversation('wizzle:system').approvals.length === 0);
-  assert.equal(w.store.conversation('wizzle:system').messages.at(-1)?.text, 'Approval deny');
+  await until(() => w.store.peek('wizzle:system').approvals.length === 0);
+  assert.equal(w.store.peek('wizzle:system').messages.at(-1)?.text, 'Approval deny');
   w.stop();
 });
 
@@ -517,8 +519,8 @@ test('a session event is written into the transcript', async () => {
   const w = await wired();
   catalog(w.bridge);
   w.bridge.send({ t: 'session', conv: CONV, event: 'compacted', detail: 'by the owner' });
-  await until(() => w.store.conversation(CONV).messages.length === 1);
-  const entry = w.store.conversation(CONV).messages[0];
+  await until(() => w.store.peek(CONV).messages.length === 1);
+  const entry = w.store.peek(CONV).messages[0];
   assert.equal(entry?.role, 'system');
   assert.equal(entry?.text, 'Session compacted: by the owner');
   w.stop();
@@ -532,9 +534,9 @@ test('malformed packets are dropped instead of breaking the store', async () => 
   w.bridge.send({ t: 'question', question: { conv: CONV } } as unknown as BridgeMessage);
   w.bridge.send({ t: 'nonsense' } as unknown as BridgeMessage);
   w.bridge.send({ t: 'message', message: message('a1', 1000, 'still here') });
-  await until(() => w.store.conversation(CONV).messages.length === 1);
+  await until(() => w.store.peek(CONV).messages.length === 1);
   assert.equal(w.store.dropped, 3);
-  assert.equal(w.store.conversation(CONV).messages[0]?.text, 'still here');
+  assert.equal(w.store.peek(CONV).messages[0]?.text, 'still here');
   w.stop();
 });
 
@@ -542,12 +544,12 @@ test('a conversation object only changes when that conversation does', async () 
   const w = await wired();
   catalog(w.bridge);
   await until(() => w.store.getSnapshot().conversations.length === 2);
-  const system = w.store.conversation('wizzle:system');
-  const before = w.store.conversation(CONV);
+  const system = w.store.peek('wizzle:system');
+  const before = w.store.peek(CONV);
   w.bridge.send({ t: 'message', message: message('a1', 1000, 'hello') });
-  await until(() => w.store.conversation(CONV).messages.length === 1);
-  assert.notEqual(w.store.conversation(CONV), before);
-  assert.equal(w.store.conversation('wizzle:system'), system);
+  await until(() => w.store.peek(CONV).messages.length === 1);
+  assert.notEqual(w.store.peek(CONV), before);
+  assert.equal(w.store.peek('wizzle:system'), system);
   w.stop();
 });
 
@@ -555,12 +557,12 @@ test('reset clears everything the old pairing sent', async () => {
   const w = await wired();
   catalog(w.bridge);
   w.bridge.send({ t: 'message', message: message('a1', 1000, 'hello') });
-  await until(() => w.store.conversation(CONV).messages.length === 1);
+  await until(() => w.store.peek(CONV).messages.length === 1);
   w.store.reset();
   assert.equal(w.store.getSnapshot().conversations.length, 0);
   assert.equal(w.store.getSnapshot().agents.length, 0);
   assert.equal(w.store.getSnapshot().hello, null);
-  assert.equal(w.store.conversation(CONV).messages.length, 0);
+  assert.equal(w.store.peek(CONV).messages.length, 0);
   w.stop();
 });
 
@@ -630,7 +632,7 @@ test('a row carries the newest agent message wizzle holds', async () => {
   w.store.open(CONV);
   w.bridge.send({ t: 'message', message: message('a1', 2000, 'first') });
   w.bridge.send({ t: 'message', message: message('u1', 3000, 'mine', 'user') });
-  await until(() => w.store.conversation(CONV).messages.length === 2);
+  await until(() => w.store.peek(CONV).messages.length === 2);
   assert.equal(w.store.getSnapshot().conversations.find((row) => row.id === CONV)?.repliedAt, 2000);
   w.stop();
 });
@@ -678,7 +680,7 @@ test('a rename keeps the conversation id and the transcript it already holds', a
   const w = await wired();
   withTopics(w.bridge);
   w.bridge.send({ t: 'message', message: { conv: TOPIC_A, msgId: 't1', role: 'agent', text: 'on it', format: 'text', at: 3100 } });
-  await until(() => w.store.conversation(TOPIC_A).messages.length === 1);
+  await until(() => w.store.peek(TOPIC_A).messages.length === 1);
   const renamed = w.store.renameTopic(TOPIC_A, 'Ops');
   const asked = await w.bridge.nextOf('rename_conversation');
   assert.equal(asked.header['conv'], TOPIC_A);
@@ -690,7 +692,7 @@ test('a rename keeps the conversation id and the transcript it already holds', a
   assert.equal(await renamed, TOPIC_A);
   const row = w.store.getSnapshot().conversations.find((item) => item.id === TOPIC_A);
   assert.equal(row?.title, 'Ops');
-  assert.equal(w.store.conversation(TOPIC_A).messages.length, 1);
+  assert.equal(w.store.peek(TOPIC_A).messages.length, 1);
   w.stop();
 });
 
@@ -699,7 +701,7 @@ test('conversation_deleted drops the row, its transcript and its open question',
   withTopics(w.bridge);
   w.bridge.send({ t: 'message', message: { conv: TOPIC_A, msgId: 't1', role: 'agent', text: 'on it', format: 'text', at: 3100 } });
   w.bridge.send({ t: 'question', question: { conv: TOPIC_A, questionId: 'q9', question: 'ship it?', options: [{ label: 'Yes', value: 'y' }] } });
-  await until(() => w.store.conversation(TOPIC_A).questions.length === 1);
+  await until(() => w.store.peek(TOPIC_A).questions.length === 1);
   const deleted = w.store.deleteTopic(TOPIC_A);
   const asked = await w.bridge.nextOf('delete_conversation');
   assert.equal(asked.header['conv'], TOPIC_A);
@@ -709,8 +711,8 @@ test('conversation_deleted drops the row, its transcript and its open question',
     w.store.getSnapshot().conversations.some((row) => row.id === TOPIC_A),
     false,
   );
-  assert.equal(w.store.conversation(TOPIC_A).messages.length, 0);
-  assert.equal(w.store.conversation(TOPIC_A).questions.length, 0);
+  assert.equal(w.store.peek(TOPIC_A).messages.length, 0);
+  assert.equal(w.store.peek(TOPIC_A).questions.length, 0);
   w.stop();
 });
 
@@ -718,10 +720,10 @@ test('a catalog that no longer lists a topic drops what wizzle cached for it', a
   const w = await wired();
   withTopics(w.bridge);
   w.bridge.send({ t: 'message', message: { conv: TOPIC_A, msgId: 't1', role: 'agent', text: 'on it', format: 'text', at: 3100 } });
-  await until(() => w.store.conversation(TOPIC_A).messages.length === 1);
+  await until(() => w.store.peek(TOPIC_A).messages.length === 1);
   catalog(w.bridge);
   await until(() => w.store.getSnapshot().conversations.length === 2);
-  assert.equal(w.store.conversation(TOPIC_A).messages.length, 0);
+  assert.equal(w.store.peek(TOPIC_A).messages.length, 0);
   w.stop();
 });
 
@@ -730,12 +732,12 @@ test('a message in one topic leaves the other topic and the default alone', asyn
   withTopics(w.bridge);
   await until(() => w.store.getSnapshot().conversations.length === 4);
   w.bridge.send({ t: 'message', message: { conv: TOPIC_A, msgId: 't1', role: 'agent', text: 'ops only', format: 'text', at: 3100 } });
-  await until(() => w.store.conversation(TOPIC_A).messages.length === 1);
-  assert.equal(w.store.conversation(TOPIC_B).messages.length, 0);
-  assert.equal(w.store.conversation(CONV).messages.length, 0);
+  await until(() => w.store.peek(TOPIC_A).messages.length === 1);
+  assert.equal(w.store.peek(TOPIC_B).messages.length, 0);
+  assert.equal(w.store.peek(CONV).messages.length, 0);
   const rows = w.store.getSnapshot().conversations;
-  assert.equal(rows.find((row) => row.id === TOPIC_A)?.preview, 'ops only');
-  assert.equal(rows.find((row) => row.id === TOPIC_B)?.preview, '');
+  assert.equal(previewOf(rows.find((row) => row.id === TOPIC_A)?.last), 'ops only');
+  assert.equal(previewOf(rows.find((row) => row.id === TOPIC_B)?.last), '');
   w.stop();
 });
 
@@ -760,15 +762,15 @@ test('an error answers the topic request that asked for it and stays off the not
   assert.equal((await removed)?.code, 'busy');
 
   w.bridge.send({ t: 'message', message: { conv: CONV, msgId: 'c1', role: 'agent', text: 'kept', format: 'text', at: 3100 } });
-  await until(() => w.store.conversation(CONV).messages.length === 1);
+  await until(() => w.store.peek(CONV).messages.length === 1);
   const refused = failureOf(w.store.clearChat(CONV));
   const clear = await w.bridge.nextOf('clear');
   w.bridge.send({ t: 'error', ref: clear.header.id, code: 'has_tasks', message: 'This chat holds 1 scheduled task; cancel it before clearing.' });
   assert.equal((await refused)?.code, 'has_tasks');
-  assert.equal(w.store.conversation(CONV).messages.length, 1);
+  assert.equal(w.store.peek(CONV).messages.length, 1);
 
   assert.equal(w.store.getSnapshot().notices.length, 0);
-  assert.equal(w.store.conversation(TOPIC_A).notices.length, 0);
+  assert.equal(w.store.peek(TOPIC_A).notices.length, 0);
   w.stop();
 });
 
@@ -887,8 +889,8 @@ test('a system message becomes a system row and history keeps one beside a local
     t: 'message',
     message: { conv: CONV, msgId: 's1', role: 'system', text: 'Setting up. Scout is reading your purpose.', format: 'text', at: 2000 },
   });
-  await until(() => w.store.conversation(CONV).messages.length === 1);
-  assert.equal(w.store.conversation(CONV).messages[0]?.role, 'system');
+  await until(() => w.store.peek(CONV).messages.length === 1);
+  assert.equal(w.store.peek(CONV).messages[0]?.role, 'system');
 
   w.store.send(CONV, 'go');
   const sent = await w.bridge.nextOf('send');
@@ -904,11 +906,11 @@ test('a system message becomes a system row and history keeps one beside a local
     ],
     hasMore: false,
   });
-  await until(() => w.store.conversation(CONV).messages.length === 3);
-  const ids = w.store.conversation(CONV).messages.map((entry) => entry.msgId);
+  await until(() => w.store.peek(CONV).messages.length === 3);
+  const ids = w.store.peek(CONV).messages.map((entry) => entry.msgId);
   assert.equal(ids.includes('h2'), true);
   assert.equal(ids.includes('h1'), false);
-  assert.equal(w.store.conversation(CONV).messages.filter((entry) => entry.role === 'system').length, 2);
+  assert.equal(w.store.peek(CONV).messages.filter((entry) => entry.role === 'system').length, 2);
   w.stop();
 });
 
@@ -971,8 +973,8 @@ test('a send refused as paused marks the echo failed with that code', async () =
   const msgId = w.store.send(CONV, 'hello');
   const sent = await w.bridge.nextOf('send');
   w.bridge.send({ t: 'error', ref: sent.header.id, code: 'paused', message: 'main is paused. Resume it to send messages.' });
-  await until(() => w.store.conversation(CONV).messages[0]?.local?.failure !== undefined);
-  const entry = w.store.conversation(CONV).messages.find((m) => m.msgId === msgId);
+  await until(() => w.store.peek(CONV).messages[0]?.local?.failure !== undefined);
+  const entry = w.store.peek(CONV).messages.find((m) => m.msgId === msgId);
   assert.equal(entry?.local?.failure?.code, 'paused');
   w.stop();
 });
@@ -981,7 +983,7 @@ test('agent_deleted drops the agent, its conversations and their questions, and 
   const w = await wired();
   withTopics(w.bridge);
   w.bridge.send({ t: 'question', question: { conv: TOPIC_A, questionId: 'q9', question: 'ship it?', options: [{ label: 'Yes', value: 'y' }] } });
-  await until(() => w.store.conversation(TOPIC_A).questions.length === 1);
+  await until(() => w.store.peek(TOPIC_A).questions.length === 1);
 
   const deleted = w.store.deleteAgent('agent-1', false);
   const asked = await w.bridge.nextOf('delete_agent');
@@ -999,7 +1001,7 @@ test('agent_deleted drops the agent, its conversations and their questions, and 
     snapshot.conversations.map((row) => row.id),
     ['wizzle:system'],
   );
-  assert.equal(w.store.conversation(TOPIC_A).questions.length, 0);
+  assert.equal(w.store.peek(TOPIC_A).questions.length, 0);
   w.stop();
 });
 
@@ -1043,8 +1045,8 @@ test('hydrate brings the cached catalog and transcript up before the bridge says
   const snapshot = w.store.getSnapshot();
   assert.equal(snapshot.capabilities?.files, true);
   assert.equal(snapshot.agents.length, 1);
-  assert.equal(snapshot.conversations[0]?.preview, 'again');
-  const state = w.store.conversation(CONV);
+  assert.equal(previewOf(snapshot.conversations[0]?.last), 'again');
+  const state = w.store.peek(CONV);
   assert.deepEqual(state.messages.map((m) => m.text), ['hello', 'again']);
   assert.deepEqual(state.questions.map((q) => q.question.questionId), ['q-new']);
   assert.equal(state.approvals.length, 0);
@@ -1052,7 +1054,7 @@ test('hydrate brings the cached catalog and transcript up before the bridge says
 
   // The question still answers through question_resolved, so the store knows its home.
   w.bridge.send({ t: 'question_resolved', questionId: 'q-new', value: 'yes' });
-  await until(() => w.store.conversation(CONV).questions.length === 0);
+  await until(() => w.store.peek(CONV).questions.length === 0);
   w.stop();
 });
 
@@ -1069,7 +1071,7 @@ test('hydrate drops an echo row an older bridge cached as wizzle message', async
   });
   const w = await wired({ cache });
   w.store.hydrate(PAIRING);
-  assert.deepEqual(w.store.conversation(CONV).messages.map((m) => [m.msgId, m.role]), [['msg-1', 'agent']]);
+  assert.deepEqual(w.store.peek(CONV).messages.map((m) => [m.msgId, m.role]), [['msg-1', 'agent']]);
   w.stop();
 });
 
@@ -1086,16 +1088,16 @@ test('hydrate marks an unconfirmed send failed and history with its msgId clears
   });
   const w = await wired({ cache });
   w.store.hydrate(PAIRING);
-  const [sent, failed] = w.store.conversation(CONV).messages;
+  const [sent, failed] = w.store.peek(CONV).messages;
   assert.equal(sent?.local?.failure?.code, 'unconfirmed');
   assert.equal(failed?.local?.failure?.code, 'paused');
 
   w.store.open(CONV);
   await w.bridge.nextOf('history');
   w.bridge.send({ t: 'history', conv: CONV, messages: [message('m-sent', 1000, 'did this land', 'user')], hasMore: false });
-  await until(() => w.store.conversation(CONV).messages[0]?.local === undefined);
-  assert.equal(w.store.conversation(CONV).messages.length, 2);
-  assert.equal(w.store.conversation(CONV).messages[1]?.local?.failure?.code, 'paused');
+  await until(() => w.store.peek(CONV).messages[0]?.local === undefined);
+  assert.equal(w.store.peek(CONV).messages.length, 2);
+  assert.equal(w.store.peek(CONV).messages[1]?.local?.failure?.code, 'paused');
   w.stop();
 });
 
@@ -1121,12 +1123,12 @@ test('history keeps the edited text and the attachments of an entry it confirms'
     messages: [message('a1', 1000, 'Running the tests'), message(msgId, 1500, 'see this', 'user')],
     hasMore: false,
   });
-  await until(() => w.store.conversation(CONV).messages[1]?.local === undefined);
-  const [edited, own] = w.store.conversation(CONV).messages;
+  await until(() => w.store.peek(CONV).messages[1]?.local === undefined);
+  const [edited, own] = w.store.peek(CONV).messages;
   assert.equal(edited?.text, 'All 20 passed');
   assert.equal(own?.attachments?.[0]?.name, 'shot.png');
   assert.ok(own?.attachments?.[0]?.uri);
-  assert.equal(w.store.conversation(CONV).messages.length, 2);
+  assert.equal(w.store.peek(CONV).messages.length, 2);
   w.stop();
 });
 
@@ -1138,8 +1140,8 @@ test('a file packet saves its body through the file store and the entry gets the
   const bytes = new Uint8Array([1, 2, 3, 4]);
   w.bridge.send({ t: 'file', conv: CONV, msgId: 'f1', file: { name: 'log.txt', mime: 'text/plain', size: 4 }, at: 6000 }, bytes);
   w.bridge.send({ t: 'file', conv: CONV, msgId: 'f2', file: { name: 'empty.txt', mime: 'text/plain', size: 0 }, at: 6001 });
-  await until(() => w.store.conversation(CONV).messages[0]?.file?.uri !== undefined);
-  const [full, empty] = w.store.conversation(CONV).messages;
+  await until(() => w.store.peek(CONV).messages[0]?.file?.uri !== undefined);
+  const [full, empty] = w.store.peek(CONV).messages;
   assert.equal(full?.file?.uri, `fake://${PAIRING}/${CONV}/f1-log.txt`);
   assert.deepEqual(files.saved.get(full?.file?.uri as string), bytes);
   assert.equal(empty?.file?.name, 'empty.txt');
@@ -1161,7 +1163,7 @@ test('an element file is stored, linked from its chat row, replaced by a newer c
   const first = elementFile('verbs', 'Spanish verbs');
   w.bridge.send({ t: 'file', conv: CONV, msgId: 'e1', file: meta(first.length), at: 5000 }, first);
   await until(() => w.store.getSnapshot().elements.length === 1);
-  const row = w.store.conversation(CONV).messages[0];
+  const row = w.store.peek(CONV).messages[0];
   assert.deepEqual(row?.element, { agentId: 'agent-1', id: 'verbs' });
   assert.equal(w.store.element('agent-1', 'verbs')?.element.title, 'Spanish verbs');
 
@@ -1169,7 +1171,7 @@ test('an element file is stored, linked from its chat row, replaced by a newer c
   const older = elementFile('verbs', 'Spanish verbs, old');
   w.bridge.send({ t: 'file', conv: CONV, msgId: 'e2', file: meta(newer.length), at: 7000 }, newer);
   w.bridge.send({ t: 'file', conv: CONV, msgId: 'e3', file: meta(older.length), at: 6000 }, older);
-  await until(() => w.store.conversation(CONV).messages.length === 3);
+  await until(() => w.store.peek(CONV).messages.length === 3);
   assert.equal(w.store.getSnapshot().elements.length, 1);
   assert.equal(w.store.element('agent-1', 'verbs')?.element.title, 'Spanish verbs, 2');
   assert.equal(cache.elements.get(PAIRING)?.[0]?.element.title, 'Spanish verbs, 2');
@@ -1189,8 +1191,8 @@ test('a broken element file stays a file row with the reason', async () => {
   w.bridge.send({ t: 'file', conv: CONV, msgId: 'b1', file: { name: 'junk.wizzle.json', mime: 'application/json', size: junk.length }, at: 5000 }, junk);
   w.bridge.send({ t: 'file', conv: CONV, msgId: 'b2', file: { name: 'empty.wizzle.json', mime: 'application/json', size: empty.length }, at: 5001 }, empty);
   w.bridge.send({ t: 'file', conv: CONV, msgId: 'b3', file: { name: 'notes.json', mime: 'application/json', size: junk.length }, at: 5002 }, junk);
-  await until(() => w.store.conversation(CONV).messages.length === 3);
-  const [bad, unknown, plain] = w.store.conversation(CONV).messages;
+  await until(() => w.store.peek(CONV).messages.length === 3);
+  const [bad, unknown, plain] = w.store.peek(CONV).messages;
   assert.equal(bad?.elementError, 'This element file is not valid JSON.');
   assert.match(unknown?.elementError ?? '', /unknown node type 'chart'/);
   assert.equal(plain?.elementError, undefined);
@@ -1206,7 +1208,7 @@ test('forgetting a conversation or a pairing drops its cache rows and files', as
   withTopics(w.bridge);
   w.bridge.send({ t: 'file', conv: TOPIC_A, msgId: 'f1', file: { name: 'a.txt', mime: 'text/plain', size: 1 }, at: 6000 }, new Uint8Array([1]));
   w.bridge.send({ t: 'file', conv: CONV, msgId: 'f2', file: { name: 'b.txt', mime: 'text/plain', size: 1 }, at: 6000 }, new Uint8Array([2]));
-  await until(() => w.store.conversation(TOPIC_A).messages[0]?.file?.uri !== undefined && w.store.conversation(CONV).messages[0]?.file?.uri !== undefined);
+  await until(() => w.store.peek(TOPIC_A).messages[0]?.file?.uri !== undefined && w.store.peek(CONV).messages[0]?.file?.uri !== undefined);
   assert.ok(cache.rows.get(PAIRING)?.has(TOPIC_A));
   assert.equal(files.saved.size, 2);
 
@@ -1234,9 +1236,9 @@ test('a cleared chat keeps its row and loses its transcript, questions, cache ro
   w.bridge.send({ t: 'question', question: { conv: CONV, questionId: 'q9', question: 'ship it?', options: [{ label: 'Yes', value: 'y' }] } });
   await until(
     () =>
-      w.store.conversation(CONV).questions.length === 1 &&
-      w.store.conversation(CONV).messages[0]?.file?.uri !== undefined &&
-      w.store.conversation(TOPIC_A).messages[0]?.file?.uri !== undefined,
+      w.store.peek(CONV).questions.length === 1 &&
+      w.store.peek(CONV).messages[0]?.file?.uri !== undefined &&
+      w.store.peek(TOPIC_A).messages[0]?.file?.uri !== undefined,
   );
 
   const cleared = w.store.clearChat(CONV);
@@ -1245,12 +1247,12 @@ test('a cleared chat keeps its row and loses its transcript, questions, cache ro
   w.bridge.send({ t: 'session', conv: CONV, event: 'cleared' });
   assert.equal(await cleared, CONV);
 
-  assert.equal(w.store.conversation(CONV).messages.length, 0);
-  assert.equal(w.store.conversation(CONV).questions.length, 0);
+  assert.equal(w.store.peek(CONV).messages.length, 0);
+  assert.equal(w.store.peek(CONV).questions.length, 0);
   assert.ok(w.store.getSnapshot().conversations.some((row) => row.id === CONV));
   assert.equal(cache.rows.get(PAIRING)?.get(CONV)?.messages.length, 0);
   assert.equal(files.saved.size, 1);
-  assert.equal(w.store.conversation(TOPIC_A).messages.length, 1);
+  assert.equal(w.store.peek(TOPIC_A).messages.length, 1);
   w.stop();
 });
 
@@ -1263,7 +1265,7 @@ test('attachments go out as uploads ahead of their send, and a quick second send
   const b = attachment(files, 'b.png', 5, 'image/png');
   const first = w.store.send(CONV, '', [a, b]) as string;
   const second = w.store.send(CONV, 'and then') as string;
-  const echo = w.store.conversation(CONV).messages[0];
+  const echo = w.store.peek(CONV).messages[0];
   assert.equal(echo?.attachments?.length, 2);
   assert.equal(echo?.local?.packetId, null);
   assert.equal(echo?.local?.failure, undefined);
@@ -1280,8 +1282,8 @@ test('attachments go out as uploads ahead of their send, and a quick second send
   assert.deepEqual(send1.header['attachments'], [up1.header['uploadId'], up2.header['uploadId']]);
   assert.equal(send2.header['msgId'], second);
   assert.equal(send2.header['attachments'], undefined);
-  await until(() => w.store.conversation(CONV).messages[0]?.local?.packetId === send1.header.id);
-  assert.equal(w.store.conversation(CONV).messages[1]?.local?.packetId, send2.header.id);
+  await until(() => w.store.peek(CONV).messages[0]?.local?.packetId === send1.header.id);
+  assert.equal(w.store.peek(CONV).messages[1]?.local?.packetId, send2.header.id);
   w.stop();
 });
 
@@ -1300,7 +1302,7 @@ test('too many files, a file over the cap, or a message over the total are refus
   assert.equal(w.store.send(CONV, '', [big('a'), big('b'), big('c')]), null);
   assert.equal(attachmentFailure([big('a'), big('b')], big('c'))?.code, 'too_large');
   assert.equal(w.store.send(CONV, '   '), null);
-  assert.equal(w.store.conversation(CONV).messages.length, 0);
+  assert.equal(w.store.peek(CONV).messages.length, 0);
   assert.equal(w.bridge.received.length, 0);
   w.stop();
 });
@@ -1315,8 +1317,8 @@ test('a refused upload fails the echo and retry sends the files again under a fr
   const upload = await w.bridge.nextOf('upload');
   await w.bridge.nextOf('send');
   w.bridge.send({ t: 'error', ref: upload.header.id, code: 'too_large', message: 'The bridge refused the file' });
-  await until(() => w.store.conversation(CONV).messages[0]?.local?.failure !== undefined);
-  assert.equal(w.store.conversation(CONV).messages[0]?.local?.failure?.code, 'too_large');
+  await until(() => w.store.peek(CONV).messages[0]?.local?.failure !== undefined);
+  assert.equal(w.store.peek(CONV).messages[0]?.local?.failure?.code, 'too_large');
 
   const retried = w.store.retry(CONV, msgId) as string;
   assert.notEqual(retried, msgId);
@@ -1325,7 +1327,7 @@ test('a refused upload fails the echo and retry sends the files again under a fr
   const sent = await w.bridge.nextOf('send');
   assert.equal(sent.header['msgId'], retried);
   assert.deepEqual(sent.header['attachments'], [again.header['uploadId']]);
-  const messages = w.store.conversation(CONV).messages;
+  const messages = w.store.peek(CONV).messages;
   assert.equal(messages.length, 1);
   assert.equal(messages[0]?.attachments?.[0]?.uri, a.uri);
   assert.ok(files.saved.has(a.uri));
@@ -1363,8 +1365,8 @@ test('the cache is written as the transcript changes and the first history page 
   w.store.open(CONV);
   await w.bridge.nextOf('history');
   w.bridge.send({ t: 'history', conv: CONV, messages: [message('a1', 1000, 'hello')], hasMore: true });
-  await until(() => w.store.conversation(CONV).loading === false);
-  assert.equal(w.store.conversation(CONV).hasMore, true);
+  await until(() => w.store.peek(CONV).loading === false);
+  assert.equal(w.store.peek(CONV).hasMore, true);
   w.stop();
 });
 
@@ -1411,18 +1413,18 @@ test('a catalog naming an agent message wizzle lacks fetches the latest page, an
   const w = await wired();
   catalog(w.bridge);
   w.bridge.send({ t: 'message', message: message('a1', 1000, 'held') });
-  await until(() => w.store.conversation(CONV).messages.length === 1);
+  await until(() => w.store.peek(CONV).messages.length === 1);
 
   w.bridge.send({ t: 'conversations', conversations: [{ id: CONV, agentId: 'agent-1', title: 'main', lastAgentAt: 900 }] });
   await until(() => w.store.getSnapshot().conversations[0]?.lastAgentAt === 900);
-  assert.equal(w.store.conversation(CONV).loading, false);
+  assert.equal(w.store.peek(CONV).loading, false);
 
   w.bridge.send({ t: 'conversations', conversations: [{ id: CONV, agentId: 'agent-1', title: 'main', lastAgentAt: 2000 }] });
   const asked = await w.bridge.nextOf('history');
   assert.equal(asked.header['conv'], CONV);
   assert.equal(asked.header['before'], undefined);
   w.bridge.send({ t: 'history', conv: CONV, messages: [message('a1', 1000, 'held'), message('a2', 2000, 'lost')], hasMore: false });
-  await until(() => w.store.conversation(CONV).messages.length === 2);
+  await until(() => w.store.peek(CONV).messages.length === 2);
   assert.equal(w.store.getSnapshot().conversations[0]?.unread, 2);
   w.stop();
 });
