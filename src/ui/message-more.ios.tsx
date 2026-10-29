@@ -8,21 +8,25 @@ import { useAppearance } from './appearance.ts';
 const GLYPH = 18;
 // The ellipsis glyph is only a few points tall, so the menu's label gets a tap area this big around it.
 const TAP = 36;
+// A fixed size, not matchContents, so the host is laid out once; the frame centers the menu, which the host
+// would otherwise pin top left while it mounts.
+const BOX = { width: TAP, height: TAP };
 
 // Apple's own menu, opened by a tap on the dots under an agent message.
 export function MessageMore({ text, color }: { text: string; color: string }) {
   const appearance = useAppearance();
   // The negative margin keeps the dots taking the same room as the copy and speaker icons beside them.
+  // The list scrolls under the home indicator, so the host ignores safe areas.
   return (
     <XStack m={-(TAP - GLYPH) / 2}>
-      <Host matchContents {...(appearance !== 'system' && { colorScheme: appearance })}>
+      <Host style={BOX} modifiers={[frame(BOX)]} ignoreSafeArea="all" {...(appearance !== 'system' && { colorScheme: appearance })}>
         <Menu
           label={
             <Image
               systemName="ellipsis"
               size={GLYPH}
               color={color}
-              modifiers={[frame({ width: TAP, height: TAP }), contentShape(shapes.rectangle())]}
+              modifiers={[frame(BOX), contentShape(shapes.rectangle())]}
             />
           }
         >
