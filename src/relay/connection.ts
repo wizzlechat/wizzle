@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import { wizzleCrypto } from '../crypto/index.ts';
+import { newId, wizzleCrypto } from '../crypto/index.ts';
 import { parsePairing, type Pairing } from '../pairing/invite.ts';
 import {
   clearSessionState,
@@ -18,8 +18,6 @@ import {
   deriveRelaySecret,
   encodePacket,
   fromB64Url,
-  toB64Url,
-  type BridgeMessage,
   type DecodedPacket,
   type WizzleMessage,
 } from '../protocol/index.ts';
@@ -27,13 +25,11 @@ import { RelayClient, type Logger } from './client.ts';
 import { webSocketTransport } from './transport.ts';
 
 export type Phase = 'unpaired' | 'connecting' | 'waiting' | 'handshake' | 'connected' | 'failed';
-export type BridgeHello = Extract<BridgeMessage, { t: 'hello' }>;
 
 export type ConnectionSnapshot = {
   phase: Phase;
   pairing: Pairing | null;
   pairings: Pairing[];
-  bridge: BridgeHello | null;
   error: string | null;
 };
 
@@ -53,7 +49,6 @@ class Connection {
   private client: RelayClient | null = null;
   private suspended = false;
   private pushToken: string | null = null;
-  private bridge: BridgeHello | null = null;
   private error: string | null = null;
   private snapshot: ConnectionSnapshot | null = null;
   private readonly listeners = new Set<() => void>();
@@ -114,7 +109,6 @@ class Connection {
     clearSessionState(pairing.pairingId);
     this.pairings = [...this.pairings.filter((one) => one.pairingId !== pairing.pairingId), pairing];
     this.activeId = pairing.pairingId;
-    this.bridge = null;
     this.error = null;
     this.persist();
     this.open(pairing);
@@ -131,7 +125,6 @@ class Connection {
     if (!pairing) return false;
     this.stop();
     this.activeId = pairingId;
-    this.bridge = null;
     this.error = null;
     this.persist();
     this.open(pairing);
@@ -169,7 +162,6 @@ class Connection {
     this.pairings = this.pairings.filter((one) => one.pairingId !== id);
     if (wasActive) {
       this.activeId = this.pairings[0]?.pairingId ?? null;
-      this.bridge = null;
       this.error = null;
       const next = this.pairing;
       if (next) this.open(next);
@@ -181,7 +173,7 @@ class Connection {
   // Returns the packet id so the caller can match the bridge's error ref, or null when nothing went out.
   send(message: WizzleMessage, body?: Uint8Array): string | null {
     if (!this.client) return null;
-    const id = toB64Url(wizzleCrypto.randomBytes(9));
+    const id = newId();
     return this.client.send(encodePacket({ id, ...message }, body)) ? id : null;
   }
 
@@ -266,10 +258,6 @@ class Connection {
       log.warn('wizzle: dropping undecodable packet');
       return;
     }
-    if (packet.header.t === 'hello') {
-      this.bridge = packet.header as unknown as BridgeHello;
-      this.changed();
-    }
     for (const listener of this.packetListeners) listener(packet);
   }
 
@@ -288,7 +276,6 @@ class Connection {
       phase: this.phase(),
       pairing: this.pairing,
       pairings: this.pairings,
-      bridge: this.bridge,
       error: this.error,
     };
   }
