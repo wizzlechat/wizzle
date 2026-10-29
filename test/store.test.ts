@@ -10,14 +10,14 @@ import {
   type Capabilities,
   type ChatMessage,
   type DecodedPacket,
-  type PhoneMessage,
+  type WizzleMessage,
 } from '../src/protocol/index.ts';
 import type { FileStore } from '../src/files/types.ts';
 import { RelayClient } from '../src/relay/client.ts';
 import type { CachedConversation, CachedMeta, CachedPairing, ReadMarks, StoreCache } from '../src/store/cache.ts';
 import { WizzleStore, attachmentFailure, plainMessage, type StoreLink } from '../src/store/store.ts';
 import type { AgentProfile, Attachment, ChatEntry, SendFailure, StoredElement } from '../src/store/types.ts';
-import { FakeBridge, FakeRelay, newPairing, phoneKeys, phoneSecrets, silentLog, until } from './fake-relay.ts';
+import { FakeBridge, FakeRelay, newPairing, wizzleKeys, wizzleSecrets, silentLog, until } from './fake-relay.ts';
 
 const CONV = 'wizzle:agent-1';
 const PAIRING = 'pairing-1';
@@ -150,8 +150,8 @@ async function wired(fakes: Fakes = {}): Promise<Wired> {
     transport: relay.transport,
     relayUrl: 'fake',
     pairingId: pairing.pairingId,
-    relaySecrets: () => phoneSecrets(pairing),
-    session: new Session(nodeCrypto, 'phone', pairing.pairingId, phoneKeys(pairing)),
+    relaySecrets: () => wizzleSecrets(pairing),
+    session: new Session(nodeCrypto, 'wizzle', pairing.pairingId, wizzleKeys(pairing)),
     persist: () => undefined,
     log: silentLog,
     onPacket: (plaintext) => {
@@ -162,7 +162,7 @@ async function wired(fakes: Fakes = {}): Promise<Wired> {
     reconnect: { minMs: 5, maxMs: 10 },
   });
   const link: StoreLink = {
-    send: (message: PhoneMessage, body?: Uint8Array) => {
+    send: (message: WizzleMessage, body?: Uint8Array) => {
       const id = `p${(n += 1)}`;
       return client.send(encodePacket({ id, ...message }, body)) ? id : null;
     },
@@ -381,7 +381,7 @@ test('history is asked for once on open, pages back, and stops when a page repea
   w.stop();
 });
 
-test('history does not duplicate a message this phone already echoed', async () => {
+test('history does not duplicate a message wizzle already echoed', async () => {
   const w = await wired();
   catalog(w.bridge);
   w.store.send(CONV, 'run the tests');
@@ -488,9 +488,9 @@ test('a question is answered and question_resolved closes it', async () => {
   const answered = await w.bridge.nextOf('answer');
   assert.equal(answered.header['questionId'], 'q1');
   assert.equal(answered.header['value'], 'yes');
-  w.bridge.send({ t: 'question_resolved', questionId: 'q1', value: 'yes', by: 'phone' });
+  w.bridge.send({ t: 'question_resolved', questionId: 'q1', value: 'yes', by: 'wizzle' });
   await until(() => w.store.conversation(CONV).questions.length === 0);
-  assert.equal(w.store.conversation(CONV).messages.at(-1)?.text, 'Answered by phone: yes');
+  assert.equal(w.store.conversation(CONV).messages.at(-1)?.text, 'Answered by wizzle: yes');
   w.stop();
 });
 
@@ -587,7 +587,7 @@ function failureOf(promise: Promise<string>): Promise<SendFailure | null> {
   );
 }
 
-test('a nickname and a look stay on the phone, show wherever the agent name does and come back on hydrate', async () => {
+test('a nickname and a look stay in wizzle, show wherever the agent name does and come back on hydrate', async () => {
   const cache = new FakeCache();
   const w = await wired({ cache });
   w.store.hydrate(PAIRING);
@@ -624,7 +624,7 @@ test('a nickname and a look stay on the phone, show wherever the agent name does
   w.stop();
 });
 
-test('a row carries the newest agent message the phone holds', async () => {
+test('a row carries the newest agent message wizzle holds', async () => {
   const w = await wired();
   catalog(w.bridge);
   w.store.open(CONV);
@@ -714,7 +714,7 @@ test('conversation_deleted drops the row, its transcript and its open question',
   w.stop();
 });
 
-test('a catalog that no longer lists a topic drops what the phone cached for it', async () => {
+test('a catalog that no longer lists a topic drops what wizzle cached for it', async () => {
   const w = await wired();
   withTopics(w.bridge);
   w.bridge.send({ t: 'message', message: { conv: TOPIC_A, msgId: 't1', role: 'agent', text: 'on it', format: 'text', at: 3100 } });
@@ -1056,7 +1056,7 @@ test('hydrate brings the cached catalog and transcript up before the bridge says
   w.stop();
 });
 
-test('hydrate drops an echo row an older bridge cached as the phone message', async () => {
+test('hydrate drops an echo row an older bridge cached as wizzle message', async () => {
   const cache = new FakeCache();
   cachedCatalog(cache);
   cache.saveConversation(PAIRING, CONV, {
@@ -1407,7 +1407,7 @@ test('read marks survive a restart and history from before the first run counts 
   w.stop();
 });
 
-test('a catalog naming an agent message the phone lacks fetches the latest page, and one it holds does not', async () => {
+test('a catalog naming an agent message wizzle lacks fetches the latest page, and one it holds does not', async () => {
   const w = await wired();
   catalog(w.bridge);
   w.bridge.send({ t: 'message', message: message('a1', 1000, 'held') });

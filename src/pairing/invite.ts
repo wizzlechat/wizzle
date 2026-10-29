@@ -1,14 +1,14 @@
 import { INVITE_SCHEME, parseInvite, toB64Url, type CryptoProvider, type KeyPair, type PairingInvite } from '../protocol/index.ts';
 
 // What secure storage holds for one paired bridge. Byte fields are base64url strings.
-// phonePublic and phonePrivate are this phone's static key for that bridge; confirmed is set by the first handshake.
+// wizzlePublic and wizzlePrivate are wizzle's static key for that bridge; confirmed is set by the first handshake.
 export type Pairing = {
   relay: string;
   pairingId: string;
   secret: string;
   bridgeKey: string;
-  phonePublic: string;
-  phonePrivate: string;
+  wizzlePublic: string;
+  wizzlePrivate: string;
   confirmed?: boolean;
   name?: string;
   runtime?: string;
@@ -23,8 +23,8 @@ export function pairingFromInvite(invite: PairingInvite, pairedAt: number, own: 
     pairingId: toB64Url(invite.pairingId),
     secret: toB64Url(invite.secret),
     bridgeKey: toB64Url(invite.bridgeKey),
-    phonePublic: toB64Url(own.publicKey),
-    phonePrivate: toB64Url(own.privateKey),
+    wizzlePublic: toB64Url(own.publicKey),
+    wizzlePrivate: toB64Url(own.privateKey),
     pairedAt,
   };
   if (invite.name !== undefined) pairing.name = invite.name;

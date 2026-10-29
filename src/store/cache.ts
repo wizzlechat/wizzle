@@ -23,7 +23,7 @@ export interface StoreCache {
   load(pairingId: string): CachedPairing | null;
   saveMeta(pairingId: string, meta: CachedMeta): void;
   saveConversation(pairingId: string, conv: string, data: CachedConversation): void;
-  // The phone is the only place elements are kept.
+  // wizzle is the only place elements are kept.
   saveElements(pairingId: string, elements: StoredElement[]): void;
   saveRead(pairingId: string, read: ReadMarks): void;
   saveProfiles(pairingId: string, profiles: Record<string, AgentProfile>): void;

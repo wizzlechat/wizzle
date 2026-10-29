@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import { phoneCrypto } from '../crypto/index.ts';
+import { wizzleCrypto } from '../crypto/index.ts';
 import { parsePairing, type Pairing } from '../pairing/invite.ts';
 import {
   clearSessionState,
@@ -21,7 +21,7 @@ import {
   toB64Url,
   type BridgeMessage,
   type DecodedPacket,
-  type PhoneMessage,
+  type WizzleMessage,
 } from '../protocol/index.ts';
 import { RelayClient, type Logger } from './client.ts';
 import { webSocketTransport } from './transport.ts';
@@ -85,7 +85,7 @@ class Connection {
     this.client?.wake();
   }
 
-  // In the background the socket closes so the relay sees the phone offline and pushes instead of forwarding.
+  // In the background the socket closes so the relay sees wizzle offline and pushes instead of forwarding.
   suspend(): void {
     if (!this.client || this.client.state === 'stopped') return;
     this.suspended = true;
@@ -107,7 +107,7 @@ class Connection {
   // Throws with the protocol's message when the text is not a valid invite.
   pair(text: string, name?: string): Pairing {
     this.load();
-    const pairing = parsePairing(text, phoneCrypto);
+    const pairing = parsePairing(text, wizzleCrypto);
     const label = name?.trim();
     if (label) pairing.name = label;
     this.stop();
@@ -139,7 +139,7 @@ class Connection {
     return true;
   }
 
-  // The invite's name is whatever the bridge calls itself, so the phone keeps its own label for it.
+  // The invite's name is whatever the bridge calls itself, so wizzle keeps its own label for it.
   rename(name: string, pairingId?: string): void {
     this.load();
     const id = pairingId ?? this.activeId;
@@ -179,9 +179,9 @@ class Connection {
   }
 
   // Returns the packet id so the caller can match the bridge's error ref, or null when nothing went out.
-  send(message: PhoneMessage, body?: Uint8Array): string | null {
+  send(message: WizzleMessage, body?: Uint8Array): string | null {
     if (!this.client) return null;
-    const id = toB64Url(phoneCrypto.randomBytes(9));
+    const id = toB64Url(wizzleCrypto.randomBytes(9));
     return this.client.send(encodePacket({ id, ...message }, body)) ? id : null;
   }
 
@@ -209,7 +209,7 @@ class Connection {
     this.suspended = false;
   }
 
-  // Marks the bridge as having pinned this phone, after which the relay knows it by the paired secret.
+  // Marks the bridge as having pinned wizzle, after which the relay knows it by the paired secret.
   private confirm(pairingId: string): void {
     if (this.pairings.find((one) => one.pairingId === pairingId)?.confirmed) return;
     this.pairings = this.pairings.map((one) => (one.pairingId === pairingId ? { ...one, confirmed: true } : one));
@@ -219,19 +219,19 @@ class Connection {
   private open(pairing: Pairing): void {
     const secret = fromB64Url(pairing.secret);
     const pairingId = fromB64Url(pairing.pairingId);
-    const own = { publicKey: fromB64Url(pairing.phonePublic), privateKey: fromB64Url(pairing.phonePrivate) };
+    const own = { publicKey: fromB64Url(pairing.wizzlePublic), privateKey: fromB64Url(pairing.wizzlePrivate) };
     const bridgeKey = fromB64Url(pairing.bridgeKey);
-    const keys = { psk: derivePsk(phoneCrypto, secret), own, peer: bridgeKey };
+    const keys = { psk: derivePsk(wizzleCrypto, secret), own, peer: bridgeKey };
     let session: Session;
     try {
-      session = new Session(phoneCrypto, 'phone', pairingId, keys, loadSessionState(pairing.pairingId) ?? undefined);
+      session = new Session(wizzleCrypto, 'wizzle', pairingId, keys, loadSessionState(pairing.pairingId) ?? undefined);
     } catch {
       log.warn('wizzle: stored session state unusable, starting fresh');
       clearSessionState(pairing.pairingId);
-      session = new Session(phoneCrypto, 'phone', pairingId, keys);
+      session = new Session(wizzleCrypto, 'wizzle', pairingId, keys);
     }
-    const invite = deriveRelaySecret(phoneCrypto, secret);
-    const paired = derivePairedRelaySecret(phoneCrypto, pairingId, own.privateKey, bridgeKey);
+    const invite = deriveRelaySecret(wizzleCrypto, secret);
+    const paired = derivePairedRelaySecret(wizzleCrypto, pairingId, own.privateKey, bridgeKey);
     const confirmed = () => this.pairings.find((one) => one.pairingId === pairing.pairingId)?.confirmed === true;
     const client = new RelayClient({
       transport: webSocketTransport,

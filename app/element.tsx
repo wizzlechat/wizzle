@@ -3,7 +3,7 @@ import { Paragraph, ScrollView, Text, YStack } from 'tamagui';
 import { useElement, useStore } from '../src/store';
 import { ElementContent } from '../src/ui/element';
 
-// One element, opened from its chat link or a list; always the latest copy the phone holds.
+// One element, opened from its chat link or a list; always the latest copy wizzle holds.
 export default function ElementScreen() {
   const params = useLocalSearchParams<{ agent: string; id: string }>();
   const stored = useElement({ agentId: params.agent ?? '', id: params.id ?? '' });
@@ -23,7 +23,7 @@ export default function ElementScreen() {
           </YStack>
         ) : (
           <Paragraph p="$6" color="$color11" text="center">
-            This element is not on this phone.
+            This element is not in wizzle.
           </Paragraph>
         )}
       </ScrollView>

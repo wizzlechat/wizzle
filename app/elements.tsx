@@ -7,7 +7,7 @@ import { Cards } from '../src/ui/icons';
 import { ListRow, ListSection } from '../src/ui/list';
 import { shortTime } from '../src/ui/time';
 
-// Every element on this phone grouped by kind, newest kind first; with ?agent= only that agent's.
+// Every element in wizzle grouped by kind, newest kind first; with ?agent= only that agent's.
 export default function Elements() {
   const { agent } = useLocalSearchParams<{ agent?: string }>();
   const snapshot = useStore();

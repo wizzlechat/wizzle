@@ -25,7 +25,7 @@ function readJson<T>(key: string, valid: (value: unknown) => value is T): T | nu
 function isPairing(value: unknown): value is Pairing {
   if (typeof value !== 'object' || value === null) return false;
   const v = value as Record<string, unknown>;
-  return ['relay', 'pairingId', 'secret', 'bridgeKey', 'phonePublic', 'phonePrivate'].every((key) => typeof v[key] === 'string');
+  return ['relay', 'pairingId', 'secret', 'bridgeKey', 'wizzlePublic', 'wizzlePrivate'].every((key) => typeof v[key] === 'string');
 }
 
 function isArray(value: unknown): value is unknown[] {

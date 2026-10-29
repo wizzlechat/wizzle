@@ -189,8 +189,8 @@ function DeletePrompt({ agent, onClose }: { agent: Agent; onClose: () => void })
   }
 
   const body = removeWorkspace
-    ? `${agent.name} and all its conversations leave this phone and the host. Its workspace folder is renamed with a .deleted suffix; nothing on disk is erased.`
-    : `${agent.name} and all its conversations leave this phone and the host. Its workspace folder stays where it is, so a new agent with the same name gets a suffixed folder. Nothing on disk is erased.`;
+    ? `${agent.name} and all its conversations leave wizzle and the host. Its workspace folder is renamed with a .deleted suffix; nothing on disk is erased.`
+    : `${agent.name} and all its conversations leave wizzle and the host. Its workspace folder stays where it is, so a new agent with the same name gets a suffixed folder. Nothing on disk is erased.`;
 
   return (
     <Overlay onClose={onClose}>

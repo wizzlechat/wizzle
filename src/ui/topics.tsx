@@ -172,7 +172,7 @@ export function DeleteTopic({ row, onClose }: { row: ConversationRow; onClose: (
   return (
     <ConfirmPrompt
       heading={`Delete ${row.title}?`}
-      body={`The transcript goes from the phone and ${agentName} loses its memory of this thread. The default conversation is untouched.`}
+      body={`The transcript goes from wizzle and ${agentName} loses its memory of this thread. The default conversation is untouched.`}
       action="Delete"
       submit={() => store.deleteTopic(row.id)}
       onClose={onClose}
@@ -186,7 +186,7 @@ export function ClearChat({ row, onClose }: { row: ConversationRow; onClose: () 
   return (
     <ConfirmPrompt
       heading="Clear this chat?"
-      body={`Its messages and files are deleted from the phone and the bridge, and ${agentName} starts this chat fresh. Its memory and elements stay.`}
+      body={`Its messages and files are deleted from wizzle and the bridge, and ${agentName} starts this chat fresh. Its memory and elements stay.`}
       action="Clear"
       submit={() => store.clearChat(row.id)}
       onClose={onClose}

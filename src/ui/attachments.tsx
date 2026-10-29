@@ -17,7 +17,7 @@ function share(uri: string, mime: string): void {
 // A received or sent file: an image inline, anything else as a tile; a tap hands it to the share sheet.
 export function FileView({ file }: { file: ReceivedFile }) {
   const uri = file.uri ? fileUrl(file.uri) : undefined;
-  if (!uri) return <Tile name={file.name} detail={`${file.mime}, ${fileSize(file.size)}. Not on this phone.`} />;
+  if (!uri) return <Tile name={file.name} detail={`${file.mime}, ${fileSize(file.size)}. Not in wizzle.`} />;
   return (
     <Pressable onPress={() => share(uri, file.mime)}>
       {isImage(file.mime) ? <Picture uri={uri} /> : <Tile name={file.name} detail={`${file.mime}, ${fileSize(file.size)}`} />}

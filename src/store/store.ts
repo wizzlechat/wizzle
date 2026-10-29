@@ -17,7 +17,7 @@ import {
   type Conversation,
   type DecodedPacket,
   type FileMeta,
-  type PhoneMessage,
+  type WizzleMessage,
   type Question,
   type QuestionOption,
   type Secret,
@@ -74,7 +74,7 @@ export type PacketListener = (packet: DecodedPacket) => void;
 
 // What the store needs from the relay connection. The tests supply their own.
 export type StoreLink = {
-  send(message: PhoneMessage, body?: Uint8Array): string | null;
+  send(message: WizzleMessage, body?: Uint8Array): string | null;
   onPacket(listener: PacketListener): () => void;
 };
 
@@ -551,7 +551,7 @@ function copyInline(tokens: Token[]): string {
     .join('');
 }
 
-// Agent rows carry the bridge's clock, so read marks compare against them and never the phone's.
+// Agent rows carry the bridge's clock, so read marks compare against them and never wizzle's.
 function newestAgentAt(messages: ChatEntry[]): number | undefined {
   let at: number | undefined;
   for (const entry of messages) if (entry.role === 'agent' && (at === undefined || entry.at > at)) at = entry.at;
@@ -588,7 +588,7 @@ function expired(expiresAt: number | undefined, now: number): boolean {
   return expiresAt !== undefined && expiresAt <= now;
 }
 
-// An older bridge sent a runtime's echo copy of an agent message as the phone's own; those cached rows go on load.
+// An older bridge sent a runtime's echo copy of an agent message as wizzle's own; those cached rows go on load.
 const ECHO_MARK = ':echo:';
 
 // A send the app was closed on may or may not have reached the bridge, so it shows as failed until history says.
@@ -597,7 +597,7 @@ function unconfirmed(entry: ChatEntry): ChatEntry {
   return { ...entry, local: { packetId: null, failure: UNCONFIRMED } };
 }
 
-// What a history row adds to an entry the phone already holds: the send is confirmed, the rest stays.
+// What a history row adds to an entry wizzle already holds: the send is confirmed, the rest stays.
 function confirm(existing: ChatEntry, message: ChatMessage): ChatEntry {
   const { local: _local, ...kept } = existing;
   return { ...kept, text: existing.edited ? existing.text : message.text };
@@ -721,7 +721,7 @@ export class WizzleStore {
     this.patch(conv, { messages: state.messages.filter((m) => m.msgId !== msgId) });
   }
 
-  // Copies a picked file into this phone's files folder so a send, or a later retry, can read it.
+  // Copies a picked file into wizzle's files folder so a send, or a later retry, can read it.
   async attach(conv: string, picked: FileMeta & { uri: string }): Promise<Attachment | null> {
     if (!this.files || !this.pairingId) return null;
     const kept = await this.files.keep(this.pairingId, conv, this.newId(), picked.name, picked.uri);
@@ -740,7 +740,7 @@ export class WizzleStore {
     if (!pairingId) return;
     const now = this.now();
     const cached = this.cache?.load(pairingId) ?? null;
-    // What the phone held before it kept read marks, or before this pairing, counts as read.
+    // What wizzle held before it kept read marks, or before this pairing, counts as read.
     if (cached?.read && typeof cached.read.floor === 'number') {
       this.readFloor = cached.read.floor;
       for (const [conv, at] of Object.entries(cached.read.marks ?? {})) if (typeof at === 'number') this.readMarks.set(conv, at);
@@ -768,7 +768,7 @@ export class WizzleStore {
     this.changed();
   }
 
-  // A pairing the phone removed takes its cached rows and saved files with it.
+  // A pairing wizzle removed takes its cached rows and saved files with it.
   forgetPairing(pairingId: string): void {
     this.cache?.forgetPairing(pairingId);
     this.files?.forgetPairing(pairingId);
@@ -911,7 +911,7 @@ export class WizzleStore {
     return this.create;
   }
 
-  // Only this phone sees a nickname or a look; an empty profile brings back the host's name and the face from the id.
+  // Only wizzle sees a nickname or a look; an empty profile brings back the host's name and the face from the id.
   setProfile(agentId: string, profile: AgentProfile): void {
     const next = toProfile(profile);
     if (JSON.stringify(next) === JSON.stringify(this.profiles.get(agentId) ?? null)) return;
@@ -999,7 +999,7 @@ export class WizzleStore {
     for (const file of attachments) {
       const bytes = await this.files?.read(file.uri);
       if (!this.conversation(conv).messages.some((m) => m.msgId === msgId)) return;
-      if (!bytes) return this.fail(conv, msgId, { code: 'file_missing', message: `${file.name} is no longer on this phone.` });
+      if (!bytes) return this.fail(conv, msgId, { code: 'file_missing', message: `${file.name} is no longer in wizzle.` });
       const uploadId = this.newId();
       const packetId = this.trySend({ t: 'upload', uploadId, file: { name: file.name, mime: file.mime, size: bytes.length } }, bytes);
       if (!packetId) return this.fail(conv, msgId, OFFLINE);
@@ -1013,7 +1013,7 @@ export class WizzleStore {
   }
 
   // The relay client throws on a frame over its limit, which counts as not sent.
-  private trySend(message: PhoneMessage, body?: Uint8Array): string | null {
+  private trySend(message: WizzleMessage, body?: Uint8Array): string | null {
     try {
       return this.link.send(message, body);
     } catch {
@@ -1025,7 +1025,7 @@ export class WizzleStore {
     this.edit(conv, msgId, { local: { packetId: null, failure } });
   }
 
-  private ask(message: PhoneMessage, make: (settle: Settle) => TopicPending): Promise<string> {
+  private ask(message: WizzleMessage, make: (settle: Settle) => TopicPending): Promise<string> {
     return new Promise<string>((resolve, reject) => {
       const packetId = this.link.send(message);
       if (!packetId) {
@@ -1044,7 +1044,7 @@ export class WizzleStore {
     }
   }
 
-  // Everything the phone cached for a conversation the catalog no longer lists.
+  // Everything wizzle cached for a conversation the catalog no longer lists.
   private forget(conv: string): void {
     this.convs.delete(conv);
     this.historyBefore.delete(conv);
@@ -1098,7 +1098,7 @@ export class WizzleStore {
     if (this.pairingId) this.cache?.saveRead(this.pairingId, { floor: this.readFloor, marks: Object.fromEntries(this.readMarks) });
   }
 
-  // An agent message the bridge holds and this phone does not means frames were lost, so the latest page comes again.
+  // An agent message the bridge holds and wizzle does not means frames were lost, so the latest page comes again.
   private catchUp(): void {
     for (const conv of this.catalog) {
       const state = this.convs.get(conv.id);
@@ -1538,7 +1538,7 @@ export class WizzleStore {
     }
   }
 
-  // A known msgId confirms what the phone holds; an unknown one is new, unless it is an echo
+  // A known msgId confirms what wizzle holds; an unknown one is new, unless it is an echo
   // from a bridge without stable ids, which the text match catches.
   private merge(conv: string, messages: ChatMessage[]): number {
     const state = this.conversation(conv);
@@ -1596,7 +1596,7 @@ export class WizzleStore {
     this.dropped += 1;
   }
 
-  // A nickname replaces the host's name everywhere the phone shows one.
+  // A nickname replaces the host's name everywhere wizzle shows one.
   private shown(agent: Agent): AgentView {
     const nickname = this.profiles.get(agent.id)?.nickname;
     return nickname && nickname !== agent.name ? { ...agent, name: nickname, hostName: agent.name } : agent;

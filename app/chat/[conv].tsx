@@ -89,7 +89,7 @@ export default function Chat() {
   const gone = snapshot.conversations.length > 0 && row === undefined && !readOnly;
   const system = useConversation(SYSTEM_CONV);
   const waitingInSystem = readOnly ? 0 : system.approvals.filter((open) => open.decided === undefined).length;
-  // Only the agent this phone just made: nothing else here knows when a container was asked to start.
+  // Only the agent wizzle just made: nothing else here knows when a container was asked to start.
   const created = snapshot.create?.conv === conv ? snapshot.create : null;
   const silent = created !== null && !state.messages.some((entry) => entry.role === 'agent');
   const stalled = useStalled(silent && created ? created.startedAt : undefined) && !hushed;
@@ -771,7 +771,7 @@ function describeCard(card: unknown): string {
   }
 }
 
-// A question buffered while the phone was away can arrive spent, and an open one can run out.
+// A question buffered while wizzle was away can arrive spent, and an open one can run out.
 function useExpired(expiresAt: number | undefined): boolean {
   const [expired, setExpired] = useState(() => expiresAt !== undefined && expiresAt <= Date.now());
   useEffect(() => {

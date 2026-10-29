@@ -14,7 +14,7 @@ import { KeyRows, useAddedSecret } from '../src/ui/keys';
 import { ListRow, ListSection, SectionTitle } from '../src/ui/list';
 import { AgentDot, ConnectionBanner } from '../src/ui/status';
 
-// How long the host may take before the screen stops asking the phone to wait for it.
+// How long the host may take before the screen stops asking wizzle to wait for it.
 const SLOW_MS = 30_000;
 
 type Start = { kind: 'blank' } | { kind: 'template'; ref: string } | { kind: 'copy'; agentId: string };

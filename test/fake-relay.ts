@@ -31,13 +31,13 @@ import type { Transport, TransportConn, TransportHandlers } from '../src/relay/t
 type Client = { role: Role | null; handlers: TransportHandlers; open: boolean };
 
 function other(role: Role): Role {
-  return role === 'phone' ? 'bridge' : 'phone';
+  return role === 'wizzle' ? 'bridge' : 'wizzle';
 }
 
 // In-process stand-in for the relay: hello/welcome, peer notices, buffering while a side is offline.
 export class FakeRelay {
   private readonly clients = new Map<Role, Client>();
-  private readonly buffered: Record<Role, Uint8Array[]> = { phone: [], bridge: [] };
+  private readonly buffered: Record<Role, Uint8Array[]> = { wizzle: [], bridge: [] };
   connections = 0;
   expectedSecret: string | null = null;
   readonly hellos: string[] = [];
@@ -87,8 +87,8 @@ export class FakeRelay {
 
   private onText(client: Client, text: string): void {
     const msg = decodeControl(text);
-    // Phones register push tokens, bridges ask for a push; the fake only records both.
-    if (msg.t === 'push' && client.role === 'phone') {
+    // wizzle apps register push tokens, bridges ask for a push; the fake only records both.
+    if (msg.t === 'push' && client.role === 'wizzle') {
       this.pushes.push({ platform: msg.platform, token: msg.token });
       return;
     }
@@ -166,7 +166,7 @@ export class FakeRelay {
   }
 }
 
-// Minimal bridge: answers handshakes, confirms, acks, and records what the phone sends.
+// Minimal bridge: answers handshakes, confirms, acks, and records what wizzle sends.
 export class FakeBridge {
   readonly session: Session;
   readonly received: DecodedPacket[] = [];
@@ -305,17 +305,17 @@ export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export type TestPairing = { pairingId: Uint8Array; secret: Uint8Array; bridge: KeyPair; phone: KeyPair };
+export type TestPairing = { pairingId: Uint8Array; secret: Uint8Array; bridge: KeyPair; wizzle: KeyPair };
 
 export function newPairing(): TestPairing {
-  return { pairingId: nodeCrypto.randomBytes(16), secret: nodeCrypto.randomBytes(32), bridge: nodeCrypto.x25519KeyPair(), phone: nodeCrypto.x25519KeyPair() };
+  return { pairingId: nodeCrypto.randomBytes(16), secret: nodeCrypto.randomBytes(32), bridge: nodeCrypto.x25519KeyPair(), wizzle: nodeCrypto.x25519KeyPair() };
 }
 
-// The phone side's session keys and relay secrets, invite secret first, as before the bridge confirms.
-export function phoneKeys(pairing: TestPairing): SessionKeys {
-  return { psk: derivePsk(nodeCrypto, pairing.secret), own: pairing.phone, peer: pairing.bridge.publicKey };
+// wizzle side's session keys and relay secrets, invite secret first, as before the bridge confirms.
+export function wizzleKeys(pairing: TestPairing): SessionKeys {
+  return { psk: derivePsk(nodeCrypto, pairing.secret), own: pairing.wizzle, peer: pairing.bridge.publicKey };
 }
 
-export function phoneSecrets(pairing: TestPairing): Uint8Array[] {
-  return [deriveRelaySecret(nodeCrypto, pairing.secret), derivePairedRelaySecret(nodeCrypto, pairing.pairingId, pairing.phone.privateKey, pairing.bridge.publicKey)];
+export function wizzleSecrets(pairing: TestPairing): Uint8Array[] {
+  return [deriveRelaySecret(nodeCrypto, pairing.secret), derivePairedRelaySecret(nodeCrypto, pairing.pairingId, pairing.wizzle.privateKey, pairing.bridge.publicKey)];
 }

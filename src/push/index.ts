@@ -6,7 +6,7 @@ import { pairingIdFromNotification } from './notification.ts';
 
 const ios = Platform.OS === 'ios';
 
-// The relay's alert is a wake for a phone that is away; in the foreground the socket already carries the news.
+// The relay's alert is a wake for wizzle while it is away; in the foreground the socket already carries the news.
 if (ios) {
   Notifications.setNotificationHandler({
     handleNotification: () => Promise.resolve({ shouldShowBanner: false, shouldShowList: false, shouldPlaySound: false, shouldSetBadge: false }),

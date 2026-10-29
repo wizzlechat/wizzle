@@ -1,4 +1,4 @@
-// Where received and picked files live on this phone. The tests supply their own.
+// Where received and picked files live in wizzle. The tests supply their own.
 export interface FileStore {
   // Writes bytes for a message and answers the saved uri (the store's own reference), or null.
   save(pairingId: string, conv: string, msgId: string, name: string, bytes: Uint8Array): Promise<string | null>;

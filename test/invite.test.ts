@@ -13,10 +13,10 @@ function invite(extra: { name?: string; runtime?: string; relay?: string; expire
   return newInvite(nodeCrypto, { relay: url, bridgeKey, expiresAt, ...rest });
 }
 
-test('a pasted invite becomes a pairing record with a fresh phone key', () => {
+test('a pasted invite becomes a pairing record with a fresh wizzle key', () => {
   const one = invite({ name: 'Studio', runtime: 'nanoclaw' });
   const pairing = parsePairing(`  ${encodeInvite(one)}\n`, nodeCrypto, { now });
-  const { phonePublic, phonePrivate, ...rest } = pairing;
+  const { wizzlePublic, wizzlePrivate, ...rest } = pairing;
   assert.deepEqual(rest, {
     relay,
     pairingId: toB64Url(one.pairingId),
@@ -26,8 +26,8 @@ test('a pasted invite becomes a pairing record with a fresh phone key', () => {
     runtime: 'nanoclaw',
     pairedAt: now,
   });
-  assert.deepEqual(nodeCrypto.x25519(fromB64Url(phonePrivate), bridgeKey).length, 32);
-  assert.notEqual(parsePairing(encodeInvite(one), nodeCrypto, { now }).phonePublic, phonePublic);
+  assert.deepEqual(nodeCrypto.x25519(fromB64Url(wizzlePrivate), bridgeKey).length, 32);
+  assert.notEqual(parsePairing(encodeInvite(one), nodeCrypto, { now }).wizzlePublic, wizzlePublic);
 });
 
 test('deep link params rebuild the same invite', () => {

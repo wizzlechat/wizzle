@@ -43,7 +43,7 @@ type Pending = { epoch: Uint8Array; seq: bigint; bytes: Uint8Array };
 const MAX_OUTBOX_FRAMES = 256;
 const MAX_OUTBOX_BYTES = 64 * 1024 * 1024;
 
-// Phone side of one pairing: hello, reconnects, handshakes, sealing, and resend until acked.
+// Wizzle side of one pairing: hello, reconnects, handshakes, sealing, and resend until acked.
 export class RelayClient {
   private readonly opts: RelayClientOptions;
   private conn: TransportConn | null = null;
@@ -154,7 +154,7 @@ export class RelayClient {
             t: 'hello',
             v: RELAY_PROTOCOL_VERSION,
             pairing: toB64Url(this.opts.pairingId),
-            role: 'phone',
+            role: 'wizzle',
             secret: toB64Url(secret),
           }),
         );

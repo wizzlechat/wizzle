@@ -66,7 +66,7 @@ export function ElementLink({ reference }: { reference: ElementRef }) {
           {title}
         </Text>
         <Text fontSize="$1" color="$color10" numberOfLines={1}>
-          {stored ? stored.element.kind : 'Not on this phone'}
+          {stored ? stored.element.kind : 'Not in wizzle'}
         </Text>
       </YStack>
       <Chevron color={theme.color10.val} />
@@ -147,7 +147,7 @@ function ListNode({ node }: { node: UiList }) {
   );
 }
 
-// Flips on the phone: a tap shows the back, another the front.
+// Flips in wizzle: a tap shows the back, another the front.
 function RevealNode({ node }: { node: UiReveal }) {
   const [back, setBack] = useState(false);
   return (
@@ -171,7 +171,7 @@ function RevealNode({ node }: { node: UiReveal }) {
   );
 }
 
-// One page at a time, swiped on the phone; the width comes from the space it is given.
+// One page at a time, swiped in wizzle; the width comes from the space it is given.
 function PagerNode({ node }: { node: UiPager }) {
   const [width, setWidth] = useState(0);
   const [page, setPage] = useState(0);

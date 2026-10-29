@@ -28,7 +28,7 @@ export default function RootLayout() {
   useEffect(() => {
     connection.start();
     const stopPush = startPush();
-    // Background closes the socket so the relay pushes instead of writing to a phone that is gone.
+    // Background closes the socket so the relay pushes instead of writing to an app that is gone.
     const sub = AppState.addEventListener('change', (state) => {
       if (state === 'background') connection.suspend();
       if (state === 'active') {

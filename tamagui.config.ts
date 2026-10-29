@@ -3,7 +3,7 @@ import { animations } from '@tamagui/config/v5-rn';
 import { Platform } from 'react-native';
 import { createTamagui } from 'tamagui';
 
-// Tamagui's small steps (12 to 15) read too small on a phone, so steps 1 to 6 go up two points.
+// Tamagui's small steps (12 to 15) read too small in wizzle, so steps 1 to 6 go up two points.
 const size = { 1: 14, 2: 15, 3: 16, 4: 17, true: 17, 5: 18, 6: 20 };
 
 // Face names match the keys registered in src/ui/fonts.ts; web resolves weights through @font-face.

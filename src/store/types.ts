@@ -21,13 +21,13 @@ export type EntryKind = 'text' | 'card' | 'file';
 
 export type SendFailure = { code: string; message: string };
 
-// Present on messages this phone created, so the UI can mark and retry them.
+// Present on messages wizzle created, so the UI can mark and retry them.
 export type LocalSend = { packetId: string | null; failure?: SendFailure };
 
 // A file the bridge sent; uri is set once its bytes are saved, as the file store's own reference.
 export type ReceivedFile = FileMeta & { uri?: string };
 
-// A file this phone sends, already copied into the app's files folder; uri as above.
+// A file wizzle sends, already copied into the app's files folder; uri as above.
 export type Attachment = FileMeta & { uri: string };
 
 // Elements are keyed by the agent that sent them and their own id; a newer file with the same id replaces one.
@@ -76,7 +76,7 @@ export type Accessory = 'antenna' | 'sprout' | 'bow' | 'crown' | 'halo';
 // Compact puts a small face beside the name; large puts a bigger one beside the name and the last message.
 export type ListStyle = 'compact' | 'large';
 
-// The phone's own nickname and look for an agent; the host never sees either.
+// wizzle's own nickname and look for an agent; the host never sees either.
 export type AgentProfile = { nickname?: string; hue?: number; eyes?: EyeStyle; accessory?: Accessory; listStyle?: ListStyle };
 
 // hostName is set when a nickname shows in place of the name the host gave the agent.
@@ -89,7 +89,7 @@ export type ConversationRow = Conversation & {
   questions: number;
   unread: number;
   topic: boolean;
-  // The newest agent message this phone holds.
+  // The newest agent message wizzle holds.
   repliedAt?: number;
 };
 
@@ -119,7 +119,7 @@ export type StoreSnapshot = {
   secrets: Secret[] | null;
   agentSecrets: Record<string, string[]>;
   keysError: SendFailure | null;
-  // The key this phone created last; seq rises with each, so a screen that sent the phone to add one can pick it.
+  // The key wizzle created last; seq rises with each, so a screen that sent wizzle to add one can pick it.
   newestSecret: { id: string; seq: number } | null;
   create: CreateState | null;
   notices: Notice[];

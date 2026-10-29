@@ -14,7 +14,7 @@ const EYE_LABELS: Record<EyeStyle, string> = { pill: 'Classic', dot: 'Dots', wid
 const ACCESSORY_LABELS: Record<Accessory, string> = { antenna: 'Antenna', sprout: 'Sprout', bow: 'Bow', crown: 'Crown', halo: 'Halo' };
 const LIST_LABELS: Record<ListStyle, string> = { compact: 'Compact', large: 'Large' };
 
-// One agent as this phone sees it: its nickname and look are kept here and never reach the host.
+// One agent as wizzle sees it: its nickname and look are kept here and never reach the host.
 export default function Profile() {
   const { agent: agentId = '' } = useLocalSearchParams<{ agent?: string }>();
   const snapshot = useStore();
@@ -41,7 +41,7 @@ export default function Profile() {
       <>
         <Stack.Screen options={{ title: profileTitle(snapshot, agentId) }} />
         <Paragraph p="$6" color="$color11" text="center">
-          This agent is not on this phone.
+          This agent is not in wizzle.
         </Paragraph>
       </>
     );
@@ -86,7 +86,7 @@ export default function Profile() {
               onSubmitEditing={() => save()}
             />
             <Text px="$4" fontSize="$2" color="$color10">
-              {`Only this phone shows it. The agent still calls itself ${hostName}.`}
+              {`Only wizzle shows it. The agent still calls itself ${hostName}.`}
             </Text>
           </YStack>
           <YStack gap="$2">

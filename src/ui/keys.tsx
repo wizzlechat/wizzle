@@ -23,7 +23,7 @@ export function secretDetail(secret: Secret): string {
   return `${where}, in the path`;
 }
 
-// Calls back once for each key this phone creates while the screen is open.
+// Calls back once for each key wizzle creates while the screen is open.
 export function useAddedSecret(newest: StoreSnapshot['newestSecret'], onAdded: (id: string) => void): void {
   const seen = useRef(newest?.seq ?? 0);
   useEffect(() => {

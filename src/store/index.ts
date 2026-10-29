@@ -1,6 +1,6 @@
 import { useCallback, useSyncExternalStore } from 'react';
 import { AppState } from 'react-native';
-import { phoneCrypto } from '../crypto/index.ts';
+import { wizzleCrypto } from '../crypto/index.ts';
 import { deviceFiles } from '../files/device';
 import { toB64Url } from '../protocol/index.ts';
 import { connection } from '../relay/connection.ts';
@@ -12,7 +12,7 @@ const cache = new SqliteCache();
 
 export const store = new WizzleStore({
   link: connection,
-  newId: () => toB64Url(phoneCrypto.randomBytes(9)),
+  newId: () => toB64Url(wizzleCrypto.randomBytes(9)),
   cache,
   files: deviceFiles,
 });
