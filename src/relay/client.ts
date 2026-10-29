@@ -42,12 +42,15 @@ type Pending = { epoch: Uint8Array; seq: bigint; bytes: Uint8Array };
 
 const MAX_OUTBOX_FRAMES = 256;
 const MAX_OUTBOX_BYTES = 64 * 1024 * 1024;
+// Received frames only move the replay window, so their state reaches disk this much later, in one write.
+const PERSIST_DELAY_MS = 1000;
 
 // Wizzle side of one pairing: hello, reconnects, handshakes, sealing, and resend until acked.
 export class RelayClient {
   private readonly opts: RelayClientOptions;
   private conn: TransportConn | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
+  private persistTimer: ReturnType<typeof setTimeout> | null = null;
   private attempts = 0;
   private outbox: Pending[] = [];
   private outboxBytes = 0;
@@ -91,7 +94,19 @@ export class RelayClient {
     const conn = this.conn;
     this.conn = null;
     conn?.close();
+    if (this.persistTimer !== null) this.persistNow();
     this.opts.onChange?.();
+  }
+
+  // The send counter must be on disk before its frame leaves, so a crash never reuses a nonce.
+  private persistNow(): void {
+    if (this.persistTimer !== null) clearTimeout(this.persistTimer);
+    this.persistTimer = null;
+    this.opts.persist(this.opts.session.exportState());
+  }
+
+  private persistSoon(): void {
+    if (this.persistTimer === null) this.persistTimer = setTimeout(() => this.persistNow(), PERSIST_DELAY_MS);
   }
 
   // The relay keeps the token per pairing; it goes out at once when attached and after every welcome.
@@ -119,8 +134,7 @@ export class RelayClient {
     if (!session.ready) return false;
     const bytes = session.seal(plaintext);
     if (bytes.length > MAX_FRAME_BYTES) throw new Error('frame exceeds relay limit');
-    // The counter is persisted before the frame leaves so a crash never reuses a nonce.
-    this.opts.persist(session.exportState());
+    this.persistNow();
     this.enqueue(bytes);
     return true;
   }
@@ -272,7 +286,7 @@ export class RelayClient {
         this.opts.log.warn('wizzle: rejected handshake frame', { err });
         return;
       }
-      this.opts.persist(session.exportState());
+      this.persistNow();
       // The confirm rides the outbox so it is resent until the bridge acknowledges it.
       if (confirm) this.enqueue(confirm);
       this.opts.onChange?.();
@@ -286,12 +300,12 @@ export class RelayClient {
     const result = session.open(frame);
     switch (result.kind) {
       case 'data':
-        this.opts.persist(session.exportState());
+        this.persistSoon();
         this.sendAck();
         this.opts.onPacket(result.plaintext);
         return;
       case 'confirm':
-        this.opts.persist(session.exportState());
+        this.persistNow();
         this.sendAck();
         this.handshaking = false;
         this.opts.log.info('wizzle: session established');
