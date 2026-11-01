@@ -7,6 +7,7 @@ import { store } from '../store/index.ts';
 import type { ChatEntry } from '../store/types.ts';
 import { ResumeButton } from './agent-actions.tsx';
 import { FileView } from './attachments.tsx';
+import { QuestionCard } from './cards.tsx';
 import { ElementLink } from './element.tsx';
 import { Check, Copy, Speaker } from './icons.tsx';
 import { Markdown } from './markdown.tsx';
@@ -199,11 +200,18 @@ function CopyMark({ copied, color }: { copied: boolean; color: string }) {
 
 function Body({ entry }: { entry: ChatEntry }) {
   const font = useMessageFont();
+  if (entry.kind === 'question' && entry.question) {
+    return (
+      <YStack pt="$2">
+        <QuestionCard open={entry.question} conv={entry.conv} />
+      </YStack>
+    );
+  }
   if (entry.kind === 'file' && entry.element) {
     return (
       <YStack gap="$2" pt="$2">
         {entry.text ? <Text {...font}>{entry.text}</Text> : null}
-        <ElementLink reference={entry.element} />
+        <ElementLink reference={entry.element} name={entry.file?.name} />
       </YStack>
     );
   }

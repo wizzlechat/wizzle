@@ -10,7 +10,7 @@ import { MAX_ATTACHMENTS, SYSTEM_CONV, store, useCapabilities, useConversation, 
 import type { ChatEntry } from '../../src/store/types';
 import { ResumeButton } from '../../src/ui/agent-actions';
 import { Banner } from '../../src/ui/banner';
-import { ApprovalCard, QuestionCard } from '../../src/ui/cards';
+import { ApprovalCard } from '../../src/ui/cards';
 import { AttachMenu, Composer, useComposer } from '../../src/ui/composer';
 import { useDeadline } from '../../src/ui/deadline';
 import { Entry } from '../../src/ui/entry';
@@ -82,7 +82,20 @@ export default function Chat() {
     else router.replace('/');
   }, [gone, router]);
 
-  const newestFirst = useMemo(() => state.messages.slice().reverse(), [state.messages]);
+  // An open question is a row at the time it arrived, so its card stays in place and scrolls with the chat.
+  const newestFirst = useMemo(() => {
+    const asked: ChatEntry[] = state.questions.map((open) => ({
+      conv,
+      msgId: `question:${open.question.questionId}`,
+      role: 'agent',
+      text: '',
+      format: 'text',
+      at: open.at,
+      kind: 'question',
+      question: open,
+    }));
+    return [...state.messages, ...asked].sort((a, b) => a.at - b.at).reverse();
+  }, [state.messages, state.questions, conv]);
   const renderItem: ListRenderItem<ChatEntry> = useCallback(
     ({ item }) => <Entry entry={item} agentName={agentName} nameColor={nameColor} conv={conv} agent={agent} />,
     [agentName, nameColor, conv, agent],
@@ -143,9 +156,6 @@ export default function Chat() {
               riderHeight.value = event.nativeEvent.layout.height;
             }}
           >
-            {state.questions.map((open) => (
-              <QuestionCard key={open.question.questionId} open={open} conv={conv} />
-            ))}
             {state.approvals.map((open) => (
               <ApprovalCard key={open.approval.approvalId} open={open} conv={conv} />
             ))}

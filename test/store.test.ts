@@ -485,6 +485,7 @@ test('a question is answered and question_resolved closes it', async () => {
   });
   await until(() => w.store.peek(CONV).questions.length === 1);
   assert.equal(w.store.getSnapshot().conversations[0]?.questions, 1);
+  assert.equal(typeof w.store.peek(CONV).questions[0]?.at, 'number');
   w.store.answer(CONV, 'q1', 'yes');
   assert.equal(w.store.peek(CONV).questions[0]?.answered, 'yes');
   const answered = await w.bridge.nextOf('answer');
@@ -1035,8 +1036,8 @@ test('hydrate brings the cached catalog and transcript up before the bridge says
   cache.saveConversation(PAIRING, CONV, {
     messages: [cachedEntry('a1', 1000, 'hello'), cachedEntry('a2', 2000, 'again')],
     questions: [
-      { question: { conv: CONV, questionId: 'q-old', question: 'late?', options: [], expiresAt: 10 } },
-      { question: { conv: CONV, questionId: 'q-new', question: 'still?', options: [], expiresAt: Date.now() + 60_000 } },
+      { question: { conv: CONV, questionId: 'q-old', question: 'late?', options: [], expiresAt: 10 }, at: 1500 },
+      { question: { conv: CONV, questionId: 'q-new', question: 'still?', options: [], expiresAt: Date.now() + 60_000 }, at: 2500 },
     ],
     approvals: [{ approval: { conv: CONV, approvalId: 'ap-old', title: 'Old', decisions: ['allow', 'deny'], expiresAt: 10 } }],
   });
@@ -1197,6 +1198,27 @@ test('a broken element file stays a file row with the reason', async () => {
   assert.match(unknown?.elementError ?? '', /unknown node type 'chart'/);
   assert.equal(plain?.elementError, undefined);
   assert.equal(w.store.getSnapshot().elements.length, 0);
+  w.stop();
+});
+
+test('deleting an element removes it from wizzle and the cache, keeps the chat link, and a resend brings it back', async () => {
+  const cache = new FakeCache();
+  const w = await wired({ cache });
+  w.store.hydrate(PAIRING);
+  catalog(w.bridge);
+  const file = elementFile('verbs', 'Spanish verbs');
+  const meta = { name: 'verbs.wizzle.json', mime: 'application/json', size: file.length };
+  w.bridge.send({ t: 'file', conv: CONV, msgId: 'e1', file: meta, at: 5000 }, file);
+  await until(() => w.store.getSnapshot().elements.length === 1);
+  w.store.deleteElement('agent-1', 'verbs');
+  assert.equal(w.store.element('agent-1', 'verbs'), undefined);
+  assert.deepEqual(w.store.getSnapshot().elements, []);
+  assert.deepEqual(cache.elements.get(PAIRING), []);
+  assert.deepEqual(w.store.peek(CONV).messages[0]?.element, { agentId: 'agent-1', id: 'verbs' });
+  w.store.deleteElement('agent-1', 'verbs');
+  w.bridge.send({ t: 'file', conv: CONV, msgId: 'e2', file: meta, at: 4000 }, file);
+  await until(() => w.store.getSnapshot().elements.length === 1);
+  assert.equal(w.store.element('agent-1', 'verbs')?.receivedAt, 4000);
   w.stop();
 });
 

@@ -343,7 +343,7 @@ export class WizzleStore {
     for (const stored of cached.elements) this.elements.set(elementKey(stored.agentId, stored.element.id), stored);
     this.sortElements();
     for (const [conv, data] of cached.conversations) {
-      const questions = data.questions.filter((open) => !expired(open.question.expiresAt, now));
+      const questions = data.questions.filter((open) => !expired(open.question.expiresAt, now)).map((open) => ({ ...open, at: open.at ?? now }));
       const approvals = data.approvals.filter((open) => !expired(open.approval.expiresAt, now));
       for (const open of questions) this.promptHome.set(open.question.questionId, conv);
       for (const open of approvals) this.promptHome.set(open.approval.approvalId, conv);
@@ -405,6 +405,15 @@ export class WizzleStore {
   // Resolves once the bridge has dropped the session; the chat stays listed, empty.
   clearChat(conv: string): Promise<string> {
     return this.ask({ t: 'clear', conv }, (settle) => ({ kind: 'clear', conv, ...settle }));
+  }
+
+  // Removes wizzle's copy only; the agent keeps its file, and sending it again brings the element back.
+  deleteElement(agentId: string, id: string): void {
+    this.load();
+    if (!this.elements.delete(elementKey(agentId, id))) return;
+    this.sortElements();
+    if (this.pairingId) this.cache?.saveElements(this.pairingId, this.elementList);
+    this.changed();
   }
 
   // Each resolves with the agent id once the bridge sends the agent back, or agent_deleted for a delete.
@@ -971,9 +980,9 @@ export class WizzleStore {
         if (!question) return void this.drop();
         this.promptHome.set(question.questionId, question.conv);
         const state = this.conversation(question.conv);
-        const open: OpenQuestion = { question };
-        const at = state.questions.findIndex((q) => q.question.questionId === question.questionId);
-        const questions = at === -1 ? [...state.questions, open] : state.questions.map((q, i) => (i === at ? open : q));
+        const index = state.questions.findIndex((q) => q.question.questionId === question.questionId);
+        const open: OpenQuestion = { question, at: index === -1 ? now : (state.questions[index] as OpenQuestion).at };
+        const questions = index === -1 ? [...state.questions, open] : state.questions.map((q, i) => (i === index ? open : q));
         this.patch(question.conv, { questions });
         return;
       }

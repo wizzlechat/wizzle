@@ -17,7 +17,7 @@ import type {
 
 export type BridgeHello = Extract<BridgeMessage, { t: 'hello' }>;
 
-export type EntryKind = 'text' | 'card' | 'file';
+export type EntryKind = 'text' | 'card' | 'file' | 'question';
 
 export type SendFailure = { code: string; message: string };
 
@@ -47,6 +47,7 @@ export type ChatEntry = {
   file?: ReceivedFile;
   element?: ElementRef;
   elementError?: string;
+  question?: OpenQuestion;
   attachments?: Attachment[];
   edited?: boolean;
   resolution?: string;
@@ -56,7 +57,8 @@ export type ChatEntry = {
 
 export type Notice = { id: string; code: string; message: string };
 
-export type OpenQuestion = { question: Question; answered?: string | string[] };
+// `at` is when the question reached wizzle, which is where its row sits in the chat.
+export type OpenQuestion = { question: Question; at: number; answered?: string | string[] };
 export type OpenApproval = { approval: Approval; decided?: ApprovalDecision };
 
 export type ConversationState = {

@@ -2,10 +2,12 @@ import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { Image, ScrollView } from 'react-native';
 import { Text, XStack, YStack, useTheme } from 'tamagui';
-import type { UiImage, UiList, UiNode, UiNodeType, UiPager, UiReveal, UiStack, UiText } from '../protocol/index.ts';
-import { useElement } from '../store/index.ts';
-import type { ElementRef } from '../store/types.ts';
+import type { UiArticle, UiImage, UiList, UiNode, UiNodeType, UiPager, UiReveal, UiStack, UiText } from '../protocol/index.ts';
+import { store, useElement, useSelector } from '../store/index.ts';
+import type { ElementRef, StoredElement } from '../store/types.ts';
 import { Cards, Chevron } from './icons.tsx';
+import { Markdown } from './markdown.tsx';
+import { ConfirmPrompt } from './topics.tsx';
 
 const MAX_IMAGE_WIDTH = 320;
 const PLACEHOLDER_HEIGHT = 180;
@@ -13,6 +15,7 @@ const PLACEHOLDER_HEIGHT = 180;
 // Text matches agent messages: body is the chat's 16 on 24.
 const TEXT_ROLE = {
   title: { fontSize: '$6', lineHeight: 26, fontWeight: '700', color: '$color' },
+  heading: { fontSize: '$5', lineHeight: 24, fontWeight: '700', color: '$color', mt: '$2' },
   body: { fontSize: '$3', lineHeight: 24, color: '$color' },
   caption: { fontSize: '$1', lineHeight: 20, color: '$color10' },
 } as const;
@@ -27,6 +30,7 @@ const NODES: { [T in UiNodeType]: Renderer<T> } = {
   list: ListNode,
   reveal: RevealNode,
   pager: PagerNode,
+  article: ArticleNode,
 };
 
 export function elementHref(ref: ElementRef): string {
@@ -38,12 +42,12 @@ export function ElementContent({ node }: { node: UiNode }) {
   return <Render node={node} />;
 }
 
-// The chat row for an element file: it opens the latest copy of that element.
-export function ElementLink({ reference }: { reference: ElementRef }) {
+// The chat row for an element file: it opens the latest copy of that element, or names the file once deleted.
+export function ElementLink({ reference, name }: { reference: ElementRef; name?: string }) {
   const router = useRouter();
   const theme = useTheme();
   const stored = useElement(reference);
-  const title = stored?.element.title ?? 'Element';
+  const title = stored?.element.title ?? name ?? 'Element';
   return (
     <XStack
       self="flex-start"
@@ -74,12 +78,44 @@ export function ElementLink({ reference }: { reference: ElementRef }) {
   );
 }
 
+// Removes wizzle's copy only: the agent keeps its file, and sending it again brings the element back.
+export function DeleteElement({ stored, onClose, onDone }: { stored: StoredElement; onClose: () => void; onDone: () => void }) {
+  const agentName = useSelector((snapshot) => snapshot.agents.find((agent) => agent.id === stored.agentId)?.name) ?? 'The agent';
+  return (
+    <ConfirmPrompt
+      heading={`Delete ${stored.element.title}?`}
+      body={`It goes from wizzle only. ${agentName} keeps its file and can send it again, and the chat keeps its link.`}
+      action="Delete"
+      submit={async () => {
+        store.deleteElement(stored.agentId, stored.element.id);
+        return stored.element.id;
+      }}
+      onClose={onClose}
+      onDone={onDone}
+    />
+  );
+}
+
 function TextNode({ node }: { node: UiText }) {
   return <Text {...TEXT_ROLE[node.role ?? 'body']}>{node.text}</Text>;
 }
 
-// The image's own aspect ratio sets the height once known; one that fails to load shows its alt text.
 function ImageNode({ node }: { node: UiImage }) {
+  return <Picture node={node} width={MAX_IMAGE_WIDTH} />;
+}
+
+// An article's cover spans the width it is given, so that width is measured first.
+function CoverImage({ node }: { node: UiImage }) {
+  const [width, setWidth] = useState(0);
+  return (
+    <YStack onLayout={(event) => setWidth(event.nativeEvent.layout.width)}>
+      {width > 0 ? <Picture node={node} width={width} /> : null}
+    </YStack>
+  );
+}
+
+// The image's own aspect ratio sets the height once known; one that fails to load shows its alt text.
+function Picture({ node, width }: { node: UiImage; width: number }) {
   const [ratio, setRatio] = useState<number | null>(null);
   const [failed, setFailed] = useState(false);
   useEffect(() => {
@@ -108,14 +144,14 @@ function ImageNode({ node }: { node: UiImage }) {
       </YStack>
     );
   }
-  const height = ratio === null ? PLACEHOLDER_HEIGHT : Math.round(MAX_IMAGE_WIDTH * ratio);
+  const height = ratio === null ? PLACEHOLDER_HEIGHT : Math.round(width * ratio);
   return (
     <Image
       source={{ uri: node.url }}
       accessibilityLabel={node.alt}
       resizeMode="cover"
       onError={() => setFailed(true)}
-      style={{ width: MAX_IMAGE_WIDTH, maxWidth: '100%', height, borderRadius: 16, backgroundColor: 'rgba(127,127,127,0.15)' }}
+      style={{ width, maxWidth: '100%', height, borderRadius: 16, backgroundColor: 'rgba(127,127,127,0.15)' }}
     />
   );
 }
@@ -195,6 +231,36 @@ function PagerNode({ node }: { node: UiPager }) {
       <Text fontSize="$1" color="$color10" text="center">
         {`${page + 1} of ${node.pages.length}`}
       </Text>
+    </YStack>
+  );
+}
+
+// A long read: the cover spans the width, the headline sits over the standfirst, and the body is markdown.
+function ArticleNode({ node }: { node: UiArticle }) {
+  const heading = node.title || node.subtitle || node.byline;
+  return (
+    <YStack gap="$4">
+      {node.cover ? <CoverImage node={node.cover} /> : null}
+      {heading ? (
+        <YStack gap="$2">
+          {node.title ? (
+            <Text fontSize="$8" lineHeight={32} fontWeight="700" color="$color">
+              {node.title}
+            </Text>
+          ) : null}
+          {node.subtitle ? (
+            <Text fontSize="$5" lineHeight={26} color="$color11">
+              {node.subtitle}
+            </Text>
+          ) : null}
+          {node.byline ? (
+            <Text fontSize="$1" lineHeight={20} color="$color10">
+              {node.byline}
+            </Text>
+          ) : null}
+        </YStack>
+      ) : null}
+      <Markdown value={node.body} />
     </YStack>
   );
 }

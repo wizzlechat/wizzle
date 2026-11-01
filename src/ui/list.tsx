@@ -49,6 +49,7 @@ export function ListRow({
   busy,
   disabled,
   onPress,
+  onLongPress,
 }: {
   icon?: Icon;
   leading?: React.ReactNode;
@@ -62,6 +63,7 @@ export function ListRow({
   busy?: boolean;
   disabled?: boolean;
   onPress?: () => void;
+  onLongPress?: () => void;
 }) {
   const theme = useTheme();
   const live = onPress !== undefined && !disabled && !busy;
@@ -75,6 +77,7 @@ export function ListRow({
       opacity={disabled ? 0.5 : 1}
       pressStyle={live ? { bg: '$color4' } : undefined}
       onPress={live ? onPress : undefined}
+      onLongPress={live ? onLongPress : undefined}
     >
       {Glyph ? <Glyph size={22} color={danger ? theme.red10.val : theme.color11.val} /> : leading}
       <XStack flex={1} items="center" gap="$2" minH={52} py="$3" pr="$4" borderBottomWidth={LINE} borderColor="$color5">

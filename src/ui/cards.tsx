@@ -21,7 +21,7 @@ export function QuestionCard({ open, conv }: { open: OpenQuestion; conv: string 
 
   return (
     <Card>
-      {question.title ? <Text fontWeight="700">{question.title}</Text> : null}
+      <Text fontWeight="700">{question.title ? `Question: ${question.title}` : 'Question'}</Text>
       <Text>{question.question}</Text>
       {question.expiresAt ? (
         <Text fontSize="$1" color="$color10">
@@ -65,7 +65,7 @@ export function QuestionCard({ open, conv }: { open: OpenQuestion; conv: string 
 export function ApprovalCard({ open, conv }: { open: OpenApproval; conv: string }) {
   const { approval } = open;
   return (
-    <Card>
+    <Card floating>
       <Text fontWeight="700">{approval.title}</Text>
       {approval.description ? <Text>{approval.description}</Text> : null}
       {approval.command ? (
@@ -100,9 +100,10 @@ export function ApprovalCard({ open, conv }: { open: OpenApproval; conv: string 
   );
 }
 
-function Card({ children }: { children: React.ReactNode }) {
+// The chat's bubble look. A floating card sits in the keyboard rider and keeps its own margins.
+function Card({ children, floating }: { children: React.ReactNode; floating?: boolean }) {
   return (
-    <YStack gap="$2" mx="$3" mb="$2" p="$3" rounded="$4" borderWidth={1} borderColor="$borderColor" bg="$color1">
+    <YStack gap="$3" p="$4" rounded="$8" bg="$color3" {...(floating ? ({ mx: '$3', mb: '$2' } as const) : ({ self: 'flex-start', maxW: '100%' } as const))}>
       {children}
     </YStack>
   );
