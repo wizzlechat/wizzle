@@ -10,7 +10,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.wizzleai.ios",
-      "buildNumber": "1.0.12",
+      "buildNumber": "1.0.14",
       "appleTeamId": "L96WZ5P5WD",
       "config": {
         "usesNonExemptEncryption": false
