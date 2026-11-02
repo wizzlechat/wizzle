@@ -1,11 +1,15 @@
 import { useCallback, useSyncExternalStore } from 'react';
 import { newId } from '../crypto/index.ts';
 import { deviceFiles } from '../files/device';
+import { protectStorage } from '../native/privacy.ts';
 import type { Capabilities } from '../protocol/index.ts';
 import { connection } from '../relay/connection.ts';
 import { SqliteCache } from './cache-sqlite';
 import { WizzleStore } from './store.ts';
 import type { AgentProfile, ConversationRow, ConversationState, ElementRef, RoomRow, StoreSnapshot, StoredElement } from './types.ts';
+
+// Before the cache opens: the cache and saved files stay out of backups and locked with the phone.
+protectStorage();
 
 export const store = new WizzleStore({
   link: connection,

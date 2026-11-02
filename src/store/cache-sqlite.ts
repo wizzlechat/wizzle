@@ -5,6 +5,9 @@ import type { AgentProfile, BridgeHello, ChatEntry, OpenApproval, OpenQuestion, 
 
 const DB_NAME = 'wizzle-cache.db';
 const WRITE_DELAY_MS = 300;
+const WIPED_VERSION = 1;
+// Copies the log into the file and empties it, so no old copy of a deleted page stays in the WAL.
+const TRUNCATE_WAL = 'PRAGMA wal_checkpoint(TRUNCATE);';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (pairing TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (pairing, key));
@@ -29,6 +32,15 @@ function parseJson(text: string): unknown {
   }
 }
 
+// VACUUM clears what was deleted before secure_delete was on; user_version records that it ran.
+function wipeOnce(db: SQLiteDatabase): void {
+  const row = db.getFirstSync<{ user_version: number }>('PRAGMA user_version');
+  if ((row?.user_version ?? 0) >= WIPED_VERSION) return;
+  db.execSync('VACUUM;');
+  db.execSync(`PRAGMA user_version = ${WIPED_VERSION};`);
+  db.execSync(TRUNCATE_WAL);
+}
+
 function list<T>(text: string): T[] {
   const value = parseJson(text);
   return Array.isArray(value) ? (value as T[]) : [];
@@ -44,8 +56,13 @@ export class SqliteCache implements StoreCache {
     let db: SQLiteDatabase | null = null;
     try {
       db = openDatabaseSync(DB_NAME);
+      // Set before the first read, so the WAL index lives in memory and no mapped file is touched while locked.
+      db.execSync('PRAGMA locking_mode = EXCLUSIVE;');
       db.execSync('PRAGMA journal_mode = WAL;');
+      // Deleted rows are overwritten with zeros instead of staying readable in free pages.
+      db.execSync('PRAGMA secure_delete = ON;');
       db.execSync(SCHEMA);
+      wipeOnce(db);
     } catch (error) {
       console.warn('wizzle: cache unavailable', error);
       db = null;
@@ -112,7 +129,10 @@ export class SqliteCache implements StoreCache {
 
   forgetConversation(pairingId: string, conv: string): void {
     this.pending.delete(`${pairingId}\0conv\0${conv}`);
-    this.write(() => this.db?.runSync('DELETE FROM conversations WHERE pairing = ? AND conv = ?', pairingId, conv));
+    this.write(() => {
+      this.db?.runSync('DELETE FROM conversations WHERE pairing = ? AND conv = ?', pairingId, conv);
+      this.db?.execSync(TRUNCATE_WAL);
+    });
   }
 
   forgetPairing(pairingId: string): void {
@@ -120,6 +140,7 @@ export class SqliteCache implements StoreCache {
     this.write(() => {
       this.db?.runSync('DELETE FROM conversations WHERE pairing = ?', pairingId);
       this.db?.runSync('DELETE FROM meta WHERE pairing = ?', pairingId);
+      this.db?.execSync(TRUNCATE_WAL);
     });
   }
 

@@ -23,7 +23,8 @@
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "allowBackup": false
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -49,7 +50,7 @@
         "expo-speech-recognition",
         {
           "microphonePermission": "wizzle listens while you dictate a message.",
-          "speechRecognitionPermission": "wizzle sends what you dictate to Apple's speech recognition to turn it into message text."
+          "speechRecognitionPermission": "wizzle turns what you dictate into message text on this iPhone. The audio never leaves it."
         }
       ]
     ]

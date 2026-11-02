@@ -1,9 +1,11 @@
 import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from 'expo-speech-recognition';
 import { useEffect, useRef, useState } from 'react';
+import { onDeviceSpeechLocale } from '../native/privacy.ts';
 
 export type DictationState = 'idle' | 'starting' | 'listening';
 
 const DENIED = 'Dictation needs the microphone and speech recognition. Allow both for wizzle in Settings.';
+const OFF_DEVICE = "This phone can't recognize your language without sending the audio to Apple, so dictation is off.";
 
 // The phrases heard so far; what was typed before the mic opened stays in front of them.
 type Session = { prefix: string; finals: string[]; interim: string };
@@ -23,7 +25,7 @@ function joined(session: Session): string {
     .join(' ');
 }
 
-// Speech into the message box. Recognition runs on Apple's servers, so it works without the on-device models.
+// Speech into the message box, recognized on the phone only; the library would fall back to Apple's servers, so it is checked first.
 export function useDictation(text: string, setText: (next: string) => void) {
   const [state, setState] = useState<DictationState>('idle');
   const [error, setError] = useState<string | null>(null);
@@ -71,6 +73,12 @@ export function useDictation(text: string, setText: (next: string) => void) {
     setError(null);
     setState('starting');
     try {
+      const lang = onDeviceSpeechLocale(deviceLang());
+      if (!lang) {
+        setState('idle');
+        setError(OFF_DEVICE);
+        return;
+      }
       const permission = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
       if (!permission.granted) {
         setState('idle');
@@ -79,10 +87,11 @@ export function useDictation(text: string, setText: (next: string) => void) {
       }
       session.current = { prefix: text, finals: [], interim: '' };
       ExpoSpeechRecognitionModule.start({
-        lang: deviceLang(),
+        lang,
         interimResults: true,
         continuous: true,
         addsPunctuation: true,
+        requiresOnDeviceRecognition: true,
       });
     } catch (err) {
       session.current = null;

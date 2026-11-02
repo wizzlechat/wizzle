@@ -1,4 +1,5 @@
 import { Directory, File, Paths } from 'expo-file-system';
+import { MAX_FILE_BYTES } from '../protocol/index.ts';
 import { fileName, safeSegment } from './paths.ts';
 import type { FileStore } from './types.ts';
 
@@ -49,7 +50,10 @@ export const deviceFiles: FileStore = {
       const ref = `${folder(pairingId, conv)}/${fileName(id, name)}`;
       const target = at(ref);
       if (target.exists) target.delete();
-      new File(sourceUri).copy(target);
+      const source = new File(sourceUri);
+      // Written, not copied: a copy keeps the source's weaker protection. One past the limit is only copied, then refused.
+      if ((source.size ?? 0) <= MAX_FILE_BYTES) target.write(await source.bytes());
+      else source.copy(target);
       return { uri: ref, size: target.size ?? 0 };
     } catch (error) {
       console.warn('wizzle: could not copy file', error);
