@@ -8,6 +8,7 @@ import type { Attachment } from '../store/types.ts';
 import { useDictation } from './dictation.ts';
 import { ArrowUp, Close, File, Mic, Photo, Plus, Stop } from './icons.tsx';
 import { ListRow } from './list.tsx';
+import { MentionPicker, addressees, mentionQuery, type RoomContext } from './room-chat.tsx';
 import { useMessageFont } from './text-size.ts';
 import { fileSize } from './time.ts';
 import { Menu } from './topics.tsx';
@@ -79,25 +80,42 @@ export function useComposer(conv: string) {
 }
 
 // The input bar: errors and picked files above a pill holding the text and its three round buttons.
+// In a room it also offers members for the @ being typed and says who the draft wakes.
 export function Composer({
   composer,
   canAttach,
   nativeID,
   onAttach,
   onLayout,
+  room,
 }: {
   composer: ComposerState;
   canAttach: boolean;
   nativeID: string;
   onAttach: () => void;
   onLayout: (height: number) => void;
+  room?: RoomContext;
 }) {
   const theme = useTheme();
   const dark = useThemeName().startsWith('dark');
   const font = useMessageFont();
   const { draft, setDraft, attachments, error, dismissError, attaching, dictation, submit, drop } = composer;
+  const [cursor, setCursor] = useState<number | null>(null);
+  const query = room ? mentionQuery(draft, cursor ?? draft.length) : null;
+  function pick(handle: string): void {
+    if (!query) return;
+    const end = query.start + query.query.length + 1;
+    setDraft(`${draft.slice(0, query.start)}@${handle} ${draft.slice(end)}`);
+    setCursor(query.start + handle.length + 2);
+  }
   return (
     <YStack px="$3" pt="$1" pb="$2" gap="$2" onLayout={(event) => onLayout(event.nativeEvent.layout.height)}>
+      {room && query ? <MentionPicker query={query.query} context={room} onPick={pick} /> : null}
+      {room && draft.trim().length > 0 ? (
+        <Text px="$2" fontSize="$1" color="$color10">
+          {addressees(draft, room.members)}
+        </Text>
+      ) : null}
       {error ? <ComposerError onDismiss={dismissError}>{error}</ComposerError> : null}
       {dictation.error ? <ComposerError onDismiss={dictation.dismiss}>{dictation.error}</ComposerError> : null}
       {attachments.length > 0 ? (
@@ -126,7 +144,8 @@ export function Composer({
             dictation.cancel();
             setDraft(next);
           }}
-          placeholder="Ask anything"
+          onSelectionChange={(event) => setCursor(event.nativeEvent.selection.end)}
+          placeholder={room ? 'Message the room' : 'Ask anything'}
           nativeID={nativeID}
           onSubmitEditing={submit}
           submitBehavior="submit"

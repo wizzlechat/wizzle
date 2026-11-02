@@ -123,7 +123,7 @@ const CAPABILITIES: Capabilities = {
   streaming: false,
   questions: true,
   approvals: true,
-  tasks: false,
+  tasks: true,
   files: true,
   history: true,
   clearSession: false,
@@ -134,6 +134,7 @@ const CAPABILITIES: Capabilities = {
   lifecycle: true,
   deleteAgent: true,
   keys: true,
+  rooms: true,
 };
 
 type Wired = { store: WizzleStore; bridge: FakeBridge; relay: FakeRelay; client: RelayClient; stop(): void };
@@ -806,6 +807,44 @@ test('the templates the bridge lists reach the snapshot, once per connection', a
   assert.equal(first?.tasks, 2);
   assert.equal(second?.description, undefined);
   assert.equal(w.bridge.received.filter((packet) => packet.header.t === 'templates').length, 0);
+  w.stop();
+});
+
+test('tasks are listed on request, a change resolves on the list that answers it, and a refusal rejects it', async () => {
+  const w = await wired();
+  catalog(w.bridge);
+  await until(() => w.store.getSnapshot().capabilities !== null);
+  assert.equal(w.store.getSnapshot().tasks, null);
+  w.store.loadTasks();
+  const asked = await w.bridge.nextOf('tasks');
+  const briefing = { id: 'briefing-1a2b', agentId: 'agent-1', name: 'briefing-1a2b', schedule: '0 9 * * 1-5', enabled: true, prompt: 'Morning briefing', runs: 3, failedRuns: 0, nextRunAt: 1700086400000 };
+  const malformed = [{ id: 'broken' }, { id: 't-1', name: 't-1', schedule: 'once', enabled: 'yes' }] as never[];
+  w.bridge.send({ t: 'tasks', ref: asked.header.id, tasks: [briefing, ...malformed] });
+  await until(() => w.store.getSnapshot().tasks !== null);
+  assert.deepEqual(w.store.getSnapshot().tasks, [briefing, { id: 't-1', name: 't-1', schedule: 'once', enabled: false }]);
+
+  const paused = w.store.pauseTask('briefing-1a2b');
+  const pause = await w.bridge.nextOf('pause_task');
+  assert.equal(pause.header.taskId, 'briefing-1a2b');
+  // A listing for someone else does not settle the pause; the reply with its ref does.
+  w.bridge.send({ t: 'tasks', tasks: [briefing] });
+  await until(() => w.store.getSnapshot().tasks?.length === 1);
+  w.bridge.send({ t: 'tasks', ref: pause.header.id, tasks: [{ ...briefing, enabled: false }] });
+  assert.equal(await paused, 'briefing-1a2b');
+  assert.equal(w.store.getSnapshot().tasks?.[0]?.enabled, false);
+
+  const ran = w.store.runTask('gone-0000');
+  const run = await w.bridge.nextOf('run_task');
+  w.bridge.send({ t: 'error', ref: run.header.id, code: 'task_failed', message: 'no live task matched: gone-0000' });
+  await assert.rejects(ran, { code: 'task_failed', message: 'no live task matched: gone-0000' });
+  assert.deepEqual(w.store.getSnapshot().notices, []);
+
+  w.store.loadTasks();
+  const again = await w.bridge.nextOf('tasks');
+  w.bridge.send({ t: 'error', ref: again.header.id, code: 'unsupported', message: 'Scheduled tasks are not available' });
+  await until(() => w.store.getSnapshot().tasksError !== null);
+  assert.equal(w.store.getSnapshot().tasksError?.code, 'unsupported');
+  assert.deepEqual(w.store.getSnapshot().notices, []);
   w.stop();
 });
 
@@ -1629,4 +1668,182 @@ test('copy as plain text drops the markdown and keeps blocks, list items, code a
       'Raw https://example.com/x stays.',
     ].join('\n\n'),
   );
+});
+
+const ROOM = 'wizzle:room:r1';
+
+function roomCatalog(bridge: FakeBridge): void {
+  catalog(bridge);
+  bridge.send({
+    t: 'agents',
+    agents: [
+      { id: 'agent-1', name: 'main', status: 'idle' },
+      { id: 'agent-2', name: 'Quill', status: 'paused' },
+      { id: 'system', name: 'System', status: 'idle' },
+    ],
+  });
+  bridge.send({ t: 'rooms', rooms: [{ id: ROOM, title: 'Launch plan', members: ['agent-1', 'agent-2'], createdAt: 900 }] });
+}
+
+test('rooms are listed with their members, kept when the conversation catalog arrives, and cached', async () => {
+  const cache = new FakeCache();
+  const w = await wired({ cache });
+  w.store.hydrate(PAIRING);
+  roomCatalog(w.bridge);
+  await until(() => w.store.getSnapshot().rooms.length === 1);
+  const [room] = w.store.getSnapshot().rooms;
+  assert.equal(room?.title, 'Launch plan');
+  assert.deepEqual(room?.agents.map((agent) => agent.name), ['main', 'Quill']);
+  assert.deepEqual(room?.speakers, ['agent-1', 'agent-2']);
+  assert.equal(w.store.getSnapshot().capabilities?.rooms, true);
+
+  // hydrate counts everything before now as read, so the message is newer than that.
+  w.bridge.send({ t: 'message', message: { conv: ROOM, msgId: 'r-a1', role: 'agent', text: 'hi', format: 'markdown', at: Date.now() + 60_000, speaker: 'agent-2' } });
+  await until(() => w.store.peek(ROOM).messages.length === 1);
+  w.bridge.send({ t: 'conversations', conversations: [{ id: CONV, agentId: 'agent-1', title: 'main' }] });
+  w.bridge.send({ t: 'agent', agent: { id: 'agent-1', name: 'main', status: 'idle' } });
+  await until(() => w.store.getSnapshot().agents.length === 3);
+  assert.equal(w.store.peek(ROOM).messages.length, 1);
+  assert.deepEqual(w.store.getSnapshot().rooms[0]?.speakers, ['agent-2', 'agent-1']);
+  assert.equal(w.store.getSnapshot().rooms[0]?.unread, 1);
+  assert.deepEqual(cache.meta.get(PAIRING)?.rooms?.map((one) => one.id), [ROOM]);
+
+  w.store.hydrate(PAIRING);
+  assert.equal(w.store.getSnapshot().rooms[0]?.title, 'Launch plan');
+  w.stop();
+});
+
+test('a malformed room is dropped and a room list without it forgets its conversation', async () => {
+  const w = await wired();
+  roomCatalog(w.bridge);
+  await until(() => w.store.getSnapshot().rooms.length === 1);
+  w.bridge.send({ t: 'message', message: { conv: ROOM, msgId: 'r-a1', role: 'agent', text: 'hi', format: 'markdown', at: 2000, speaker: 'agent-1' } });
+  await until(() => w.store.peek(ROOM).messages.length === 1);
+  const dropped = w.store.dropped;
+  w.bridge.send({ t: 'room', room: { title: 'No id' } } as unknown as BridgeMessage);
+  await until(() => w.store.dropped === dropped + 1);
+  w.bridge.send({ t: 'rooms', rooms: [] });
+  await until(() => w.store.getSnapshot().rooms.length === 0);
+  assert.equal(w.store.peek(ROOM).messages.length, 0);
+  w.stop();
+});
+
+test('createRoom, renameRoom and setRoomMembers resolve on the room under their ref, and deleteRoom on room_deleted', async () => {
+  const w = await wired();
+  roomCatalog(w.bridge);
+  await until(() => w.store.getSnapshot().rooms.length === 1);
+
+  const created = w.store.createRoom('  Ops ', ['agent-1', 'agent-2', 'agent-1']);
+  const sent = await w.bridge.nextOf('create_room');
+  assert.equal(sent.header['title'], 'Ops');
+  assert.deepEqual(sent.header['members'], ['agent-1', 'agent-2']);
+  w.bridge.send({ t: 'room', ref: sent.header.id, room: { id: 'wizzle:room:r2', title: 'Ops', members: ['agent-1', 'agent-2'] } });
+  assert.equal(await created, 'wizzle:room:r2');
+  assert.equal(w.store.getSnapshot().rooms.length, 2);
+
+  const renamed = w.store.renameRoom('wizzle:room:r2', 'Ops team');
+  const rename = await w.bridge.nextOf('update_room');
+  assert.deepEqual({ conv: rename.header['conv'], title: rename.header['title'], members: rename.header['members'] }, { conv: 'wizzle:room:r2', title: 'Ops team', members: undefined });
+  w.bridge.send({ t: 'room', ref: rename.header.id, room: { id: 'wizzle:room:r2', title: 'Ops team', members: ['agent-1', 'agent-2'] } });
+  assert.equal(await renamed, 'wizzle:room:r2');
+
+  const members = w.store.setRoomMembers('wizzle:room:r2', ['agent-1']);
+  await assert.rejects(members, (failure: SendFailure) => failure.code === 'bad_request');
+  await assert.rejects(w.store.createRoom(' ', ['agent-1', 'agent-2']), (failure: SendFailure) => failure.code === 'bad_request');
+
+  const refused = w.store.setRoomMembers('wizzle:room:r2', ['agent-1', 'agent-2']);
+  const change = await w.bridge.nextOf('update_room');
+  w.bridge.send({ t: 'error', ref: change.header.id, code: 'busy', message: 'Quill is still working' });
+  await assert.rejects(refused, (failure: SendFailure) => failure.code === 'busy');
+
+  const deleted = w.store.deleteRoom('wizzle:room:r2');
+  await w.bridge.nextOf('delete_room');
+  w.bridge.send({ t: 'room_deleted', conv: 'wizzle:room:r2' });
+  assert.equal(await deleted, 'wizzle:room:r2');
+  assert.deepEqual(w.store.getSnapshot().rooms.map((room) => room.id), [ROOM]);
+  w.stop();
+});
+
+test('room entries keep their speaker from messages, files, cards, edits, questions and history', async () => {
+  const w = await wired();
+  w.store.hydrate(PAIRING);
+  roomCatalog(w.bridge);
+  await until(() => w.store.getSnapshot().rooms.length === 1);
+  w.bridge.send({ t: 'message', message: { conv: ROOM, msgId: 'm-1', role: 'agent', text: '@Quill go', format: 'markdown', at: 1000, speaker: 'agent-1' } });
+  const element = elementFile('plan', 'Plan');
+  w.bridge.send({ t: 'file', conv: ROOM, msgId: 'm-2', file: { name: 'plan.wizzle.json', mime: 'application/json', size: element.length }, at: 1100, speaker: 'agent-2' }, element);
+  w.bridge.send({ t: 'card', conv: ROOM, msgId: 'm-3', card: { type: 'card' }, fallbackText: 'card', at: 1200, speaker: 'agent-2' });
+  w.bridge.send({ t: 'edit', conv: ROOM, msgId: 'm-4', text: 'late edit', speaker: 'agent-1' });
+  w.bridge.send({ t: 'question', question: { conv: ROOM, questionId: 'q-r', question: 'Which?', options: [], speaker: 'agent-2' } });
+  w.bridge.send({ t: 'history', conv: ROOM, hasMore: false, messages: [{ conv: ROOM, msgId: 'h-1', role: 'agent', text: 'old', format: 'markdown', at: 500, speaker: 'agent-2' }] });
+  await until(() => w.store.peek(ROOM).messages.length === 5 && w.store.peek(ROOM).questions.length === 1);
+  const speakers = Object.fromEntries(w.store.peek(ROOM).messages.map((m) => [m.msgId, m.speaker]));
+  assert.deepEqual(speakers, { 'h-1': 'agent-2', 'm-1': 'agent-1', 'm-2': 'agent-2', 'm-3': 'agent-2', 'm-4': 'agent-1' });
+  assert.equal(w.store.peek(ROOM).questions[0]?.question.speaker, 'agent-2');
+  assert.deepEqual(w.store.peek(ROOM).messages.find((m) => m.msgId === 'm-2')?.element, { agentId: 'agent-2', id: 'plan' });
+  assert.equal(w.store.element('agent-2', 'plan')?.element.title, 'Plan');
+  w.stop();
+});
+
+test('room activity is one row per speaker, idle removes only that speaker, and a new connection clears them', async () => {
+  const w = await wired();
+  roomCatalog(w.bridge);
+  await until(() => w.store.getSnapshot().rooms.length === 1);
+  w.bridge.send({ t: 'activity', activity: { conv: ROOM, state: 'thinking', speaker: 'agent-1' } });
+  w.bridge.send({ t: 'activity', activity: { conv: ROOM, state: 'tool', tool: 'Bash', speaker: 'agent-2' } });
+  w.bridge.send({ t: 'activity', activity: { conv: ROOM, state: 'tool', tool: 'Read', speaker: 'agent-1' } });
+  await until(() => w.store.peek(ROOM).activities.length === 2 && w.store.peek(ROOM).activities[0]?.tool === 'Read');
+  assert.deepEqual(w.store.peek(ROOM).activities.map((one) => one.speaker), ['agent-1', 'agent-2']);
+  assert.equal(w.store.peek(ROOM).activity, null);
+  w.bridge.send({ t: 'activity', activity: { conv: ROOM, state: 'idle', speaker: 'agent-1' } });
+  await until(() => w.store.peek(ROOM).activities.length === 1);
+  assert.equal(w.store.getSnapshot().rooms[0]?.activities[0]?.speaker, 'agent-2');
+  w.bridge.send({ t: 'hello', protocol: 1, runtime: 'nanoclaw', bridgeVersion: '0.1.0', host: 'pi', capabilities: CAPABILITIES });
+  await until(() => w.store.peek(ROOM).activities.length === 0);
+  w.stop();
+});
+
+test('a room hold shows on the row, continue clears it at once and tells the bridge', async () => {
+  const w = await wired();
+  roomCatalog(w.bridge);
+  await until(() => w.store.getSnapshot().rooms.length === 1);
+  w.bridge.send({ t: 'room_hold', conv: ROOM, held: ['agent-2'] });
+  await until(() => w.store.getSnapshot().rooms[0]?.held.length === 1);
+  w.store.continueRoom(ROOM);
+  assert.deepEqual(w.store.getSnapshot().rooms[0]?.held, []);
+  const sent = await w.bridge.nextOf('continue_room');
+  assert.equal(sent.header['conv'], ROOM);
+  w.bridge.send({ t: 'room_hold', conv: ROOM, held: ['agent-1'] });
+  await until(() => w.store.getSnapshot().rooms[0]?.held[0] === 'agent-1');
+  w.bridge.send({ t: 'room_hold', conv: ROOM, held: [] });
+  await until(() => w.store.getSnapshot().rooms[0]?.held.length === 0);
+  w.stop();
+});
+
+test('a deleted agent leaves every room it was in', async () => {
+  const w = await wired();
+  roomCatalog(w.bridge);
+  await until(() => w.store.getSnapshot().rooms.length === 1);
+  w.bridge.send({ t: 'agent_deleted', agentId: 'agent-2' });
+  await until(() => w.store.getSnapshot().rooms[0]?.members.length === 1);
+  assert.deepEqual(w.store.getSnapshot().rooms[0]?.agents.map((agent) => agent.id), ['agent-1']);
+  w.stop();
+});
+
+test('a room send goes out like any other, and clearing a room wipes its transcript and hold', async () => {
+  const w = await wired();
+  roomCatalog(w.bridge);
+  await until(() => w.store.getSnapshot().rooms.length === 1);
+  w.store.send(ROOM, '@Quill draft it');
+  const sent = await w.bridge.nextOf('send');
+  assert.equal(sent.header['conv'], ROOM);
+  w.bridge.send({ t: 'room_hold', conv: ROOM, held: ['agent-2'] });
+  await until(() => w.store.peek(ROOM).held.length === 1);
+  const cleared = w.store.clearChat(ROOM);
+  await w.bridge.nextOf('clear');
+  w.bridge.send({ t: 'session', conv: ROOM, event: 'cleared' });
+  assert.equal(await cleared, ROOM);
+  assert.equal(w.store.peek(ROOM).messages.length, 0);
+  assert.deepEqual(w.store.peek(ROOM).held, []);
+  w.stop();
 });

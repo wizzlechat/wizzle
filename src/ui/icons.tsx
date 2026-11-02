@@ -33,17 +33,18 @@ export function Gear({ size = 22, color }: { size?: number; color?: string }) {
   );
 }
 
-export function Server({ size = 22, color }: { size?: number; color?: string }) {
+// The bridge: Tabler's plug-connected (MIT).
+export function Plug({ size = 22, color }: { size?: number; color?: string }) {
   const ink = useInk(color);
   return (
-    <Svg width={size} height={size} viewBox="0 0 24 24">
-      <Rect x={3} y={3} width={18} height={7.5} rx={2.4} stroke={ink} strokeWidth={2} fill="none" />
-      <Rect x={3} y={13.5} width={18} height={7.5} rx={2.4} stroke={ink} strokeWidth={2} fill="none" />
-      <Circle cx={7.2} cy={6.75} r={1.3} fill={ink} />
-      <Circle cx={7.2} cy={17.25} r={1.3} fill={ink} />
-      <Rect x={11} y={5.9} width={6.2} height={1.7} rx={0.85} fill={ink} />
-      <Rect x={11} y={16.4} width={6.2} height={1.7} rx={0.85} fill={ink} />
-    </Svg>
+    <Outline size={size} ink={ink}>
+      <Path d="M7 12l5 5l-1.5 1.5a3.536 3.536 0 1 1 -5 -5l1.5 -1.5" />
+      <Path d="M17 12l-5 -5l1.5 -1.5a3.536 3.536 0 1 1 5 5l-1.5 1.5" />
+      <Path d="M3 21l2.5 -2.5" />
+      <Path d="M18.5 5.5l2.5 -2.5" />
+      <Path d="M10 11l-2 2" />
+      <Path d="M13 14l-2 2" />
+    </Outline>
   );
 }
 
@@ -318,6 +319,27 @@ export function Cards({ size = 22, color }: { size?: number; color?: string }) {
   return (
     <Outline size={size} ink={ink}>
       <Path d="M8 3h11a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM3 8v11a2 2 0 0 0 2 2h11" />
+    </Outline>
+  );
+}
+
+export function Clock({ size = 22, color }: { size?: number; color?: string }) {
+  const ink = useInk(color);
+  return (
+    <Outline size={size} ink={ink}>
+      <Circle cx={12} cy={12} r={9} />
+      <Path d="M12 7v5l3 2" />
+    </Outline>
+  );
+}
+
+// Two heads: the members of a room.
+export function People({ size = 22, color }: { size?: number; color?: string }) {
+  const ink = useInk(color);
+  return (
+    <Outline size={size} ink={ink}>
+      <Circle cx={9} cy={8} r={3.5} />
+      <Path d="M2.5 20a6.5 6.5 0 0 1 13 0M16 4.6a3.5 3.5 0 0 1 0 6.8M18 14.2a6.5 6.5 0 0 1 3.5 5.8" />
     </Outline>
   );
 }

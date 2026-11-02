@@ -9,7 +9,9 @@ import type {
   Conversation,
   FileMeta,
   Question,
+  Room,
   Secret,
+  Task,
   TemplateInfo,
   TextFormat,
   UiElement,
@@ -53,6 +55,8 @@ export type ChatEntry = {
   resolution?: string;
   reactions?: string[];
   local?: LocalSend;
+  // The room member that said it.
+  speaker?: string;
 };
 
 export type Notice = { id: string; code: string; message: string };
@@ -64,6 +68,10 @@ export type OpenApproval = { approval: Approval; decided?: ApprovalDecision };
 export type ConversationState = {
   messages: ChatEntry[];
   activity: Activity | null;
+  // In a room, one per member at work.
+  activities: Activity[];
+  // In a room, the members the handoff cap held back.
+  held: string[];
   questions: OpenQuestion[];
   approvals: OpenApproval[];
   notices: Notice[];
@@ -106,7 +114,20 @@ export type CreateState = {
   startedAt: number;
 };
 
+// A room with its members resolved; speakers are member ids, the most recent speaker first.
+export type RoomRow = Room & {
+  agents: AgentView[];
+  speakers: string[];
+  last: ChatEntry | null;
+  activities: Activity[];
+  held: string[];
+  questions: number;
+  unread: number;
+  repliedAt?: number;
+};
+
 // One agent with its default conversation and its topics, in list order.
+
 export type AgentGroup = { agent: AgentView; conversations: ConversationRow[] };
 
 export type StoreSnapshot = {
@@ -116,6 +137,7 @@ export type StoreSnapshot = {
   profiles: Record<string, AgentProfile>;
   conversations: ConversationRow[];
   agentGroups: AgentGroup[];
+  rooms: RoomRow[];
   templates: TemplateInfo[];
   // The vault as the bridge last listed it; null until it has.
   secrets: Secret[] | null;
@@ -123,6 +145,9 @@ export type StoreSnapshot = {
   keysError: SendFailure | null;
   // The key wizzle created last; seq rises with each, so a screen that sent wizzle to add one can pick it.
   newestSecret: { id: string; seq: number } | null;
+  // Every scheduled task on the host as the bridge last listed them; null until it has.
+  tasks: Task[] | null;
+  tasksError: SendFailure | null;
   create: CreateState | null;
   notices: Notice[];
   elements: StoredElement[];

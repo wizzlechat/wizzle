@@ -1,7 +1,7 @@
 import { Stack, useRouter } from 'expo-router';
 import { Paragraph, ScrollView, Text, XStack, YStack } from 'tamagui';
 import { connection, useConnection, type Phase } from '../src/relay/connection';
-import { Plus, Server } from '../src/ui/icons';
+import { Plug, Plus } from '../src/ui/icons';
 import { ListRow, ListSection } from '../src/ui/list';
 import { StatusDot } from '../src/ui/status';
 
@@ -29,7 +29,7 @@ export default function Installs() {
               {conn.pairings.map((pairing) => (
                 <ListRow
                   key={pairing.pairingId}
-                  icon={Server}
+                  icon={Plug}
                   label={pairing.name ?? 'Bridge'}
                   detail={pairing.relay}
                   trailing={pairing.pairingId === activeId ? <Active phase={conn.phase} /> : null}

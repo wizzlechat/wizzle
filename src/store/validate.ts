@@ -1,4 +1,4 @@
-import { MAX_FILE_BYTES } from '../protocol/index.ts';
+import { MAX_FILE_BYTES, ROOM_LIMITS } from '../protocol/index.ts';
 import type { Accessory, Attachment, EyeStyle, ListStyle, SendFailure } from './types.ts';
 
 // Limits wizzle checks before anything goes to the bridge, and the choices a profile may hold.
@@ -56,6 +56,20 @@ export function nameFailure(name: string): SendFailure | null {
   if (trimmed.length > MAX_NAME_CHARS) return { code: 'bad_request', message: `An agent name is at most ${MAX_NAME_CHARS} characters.` };
   if (agentFolder(trimmed).length === 0) return { code: 'bad_request', message: 'An agent name needs a letter or a digit.' };
   if (trimmed.toLowerCase() === 'system') return { code: 'bad_request', message: 'System is a reserved name.' };
+  return null;
+}
+
+export function roomTitleFailure(title: string): SendFailure | null {
+  const trimmed = title.trim();
+  if (trimmed.length === 0) return { code: 'bad_request', message: 'A room needs a name.' };
+  if (trimmed.length > ROOM_LIMITS.title) return { code: 'bad_request', message: `A room name is at most ${ROOM_LIMITS.title} characters.` };
+  return null;
+}
+
+export function roomMembersFailure(members: string[]): SendFailure | null {
+  const { minMembers, maxMembers } = ROOM_LIMITS;
+  if (new Set(members).size < minMembers) return { code: 'bad_request', message: `A room needs at least ${minMembers} agents.` };
+  if (new Set(members).size > maxMembers) return { code: 'bad_request', message: `A room holds at most ${maxMembers} agents.` };
   return null;
 }
 

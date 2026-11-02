@@ -12,9 +12,11 @@ import type {
   FileMeta,
   Question,
   QuestionOption,
+  Room,
   Secret,
   SecretInjection,
   SecretType,
+  Task,
   TemplateInfo,
   TextFormat,
 } from '../protocol/index.ts';
@@ -68,6 +70,7 @@ const CAPABILITY_FLAGS: Record<keyof Capabilities, true> = {
   lifecycle: true,
   deleteAgent: true,
   keys: true,
+  rooms: true,
 };
 
 export const CAPABILITY_KEYS = Object.keys(CAPABILITY_FLAGS) as (keyof Capabilities)[];
@@ -114,6 +117,31 @@ export function toTemplateInfo(value: unknown): TemplateInfo | null {
     ...(description !== null && { description }),
     ...(version !== null && { version }),
     ...(category !== null && { category, downloaded: value['downloaded'] === true }),
+  };
+}
+
+export function toTask(value: unknown): Task | null {
+  if (!isRecord(value)) return null;
+  const id = str(value['id']);
+  const schedule = str(value['schedule']);
+  if (!id || !schedule) return null;
+  const agentId = str(value['agentId']);
+  const prompt = str(value['prompt']);
+  const runs = num(value['runs']);
+  const failedRuns = num(value['failedRuns']);
+  const lastRunAt = num(value['lastRunAt']);
+  const nextRunAt = num(value['nextRunAt']);
+  return {
+    id,
+    name: str(value['name']) ?? id,
+    schedule,
+    enabled: value['enabled'] === true,
+    ...(agentId !== null && { agentId }),
+    ...(prompt !== null && { prompt }),
+    ...(runs !== null && { runs }),
+    ...(failedRuns !== null && { failedRuns }),
+    ...(lastRunAt !== null && { lastRunAt }),
+    ...(nextRunAt !== null && { nextRunAt }),
   };
 }
 
@@ -207,13 +235,42 @@ export function toConversation(value: unknown): Conversation | null {
   };
 }
 
+// Members that are not text are dropped, and so is a repeat.
+export function toRoom(value: unknown): Room | null {
+  if (!isRecord(value)) return null;
+  const id = str(value['id']);
+  if (!id) return null;
+  const raw = Array.isArray(value['members']) ? value['members'] : [];
+  const members = [...new Set(raw.filter((member): member is string => typeof member === 'string' && member.length > 0))];
+  const lastAt = num(value['lastAt']);
+  const createdAt = num(value['createdAt']);
+  const lastAgentAt = num(value['lastAgentAt']);
+  return {
+    id,
+    title: str(value['title']) ?? 'Room',
+    members,
+    ...(lastAt !== null && { lastAt }),
+    ...(createdAt !== null && { createdAt }),
+    ...(lastAgentAt !== null && { lastAgentAt }),
+  };
+}
+
 export function toChatMessage(value: unknown, now: number): ChatMessage | null {
   if (!isRecord(value)) return null;
   const conv = str(value['conv']);
   const msgId = str(value['msgId']);
   const text = str(value['text']);
   if (!conv || !msgId || text === null) return null;
-  return { conv, msgId, role: toRole(value['role']), text, format: toFormat(value['format']), at: num(value['at']) ?? now };
+  const speaker = str(value['speaker']);
+  return {
+    conv,
+    msgId,
+    role: toRole(value['role']),
+    text,
+    format: toFormat(value['format']),
+    at: num(value['at']) ?? now,
+    ...(speaker !== null && { speaker }),
+  };
 }
 
 export function toActivity(value: unknown): Activity | null {
@@ -224,6 +281,7 @@ export function toActivity(value: unknown): Activity | null {
   const label = str(value['label']);
   const startedAt = num(value['startedAt']);
   const timeoutMs = num(value['timeoutMs']);
+  const speaker = str(value['speaker']);
   return {
     conv,
     state: toActivityState(value['state']),
@@ -231,6 +289,7 @@ export function toActivity(value: unknown): Activity | null {
     ...(label !== null && { label }),
     ...(startedAt !== null && { startedAt }),
     ...(timeoutMs !== null && { timeoutMs }),
+    ...(speaker !== null && { speaker }),
   };
 }
 
@@ -252,6 +311,7 @@ export function toQuestion(value: unknown): Question | null {
   const options = raw.map(toOption).filter((option): option is QuestionOption => option !== null);
   const title = str(value['title']);
   const expiresAt = num(value['expiresAt']);
+  const speaker = str(value['speaker']);
   return {
     conv,
     questionId,
@@ -260,6 +320,7 @@ export function toQuestion(value: unknown): Question | null {
     ...(title !== null && { title }),
     ...(value['multi'] === true && { multi: true }),
     ...(expiresAt !== null && { expiresAt }),
+    ...(speaker !== null && { speaker }),
   };
 }
 

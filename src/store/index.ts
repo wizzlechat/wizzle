@@ -5,7 +5,7 @@ import type { Capabilities } from '../protocol/index.ts';
 import { connection } from '../relay/connection.ts';
 import { SqliteCache } from './cache-sqlite';
 import { WizzleStore } from './store.ts';
-import type { AgentProfile, ConversationRow, ConversationState, ElementRef, StoreSnapshot, StoredElement } from './types.ts';
+import type { AgentProfile, ConversationRow, ConversationState, ElementRef, RoomRow, StoreSnapshot, StoredElement } from './types.ts';
 
 export const store = new WizzleStore({
   link: connection,
@@ -47,6 +47,10 @@ export function useCapabilities(): Capabilities | null {
 
 export function useRow(conv: string): ConversationRow | undefined {
   return useSelector((snapshot) => snapshot.conversations.find((row) => row.id === conv));
+}
+
+export function useRoom(conv: string): RoomRow | undefined {
+  return useSelector((snapshot) => snapshot.rooms.find((room) => room.id === conv));
 }
 
 export function useProfile(agentId: string): AgentProfile | undefined {

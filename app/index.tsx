@@ -1,17 +1,19 @@
 import { Redirect, Stack, useRouter } from 'expo-router';
-import { memo, useCallback, useMemo, useState } from 'react';
-import { FlatList, Platform, Text as NativeText, type ColorValue } from 'react-native';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { FlatList, Platform, ScrollView, Text as NativeText, View, useWindowDimensions, type ColorValue } from 'react-native';
 import { Button, H4, Paragraph, Text, XStack, YStack, getTokenValue } from 'tamagui';
 import type { Agent } from '../src/protocol/index';
 import { useConnection, type Phase } from '../src/relay/connection';
 import { store, useStore } from '../src/store';
-import type { AgentGroup, AgentProfile, ConversationRow } from '../src/store/types';
+import type { AgentGroup, AgentProfile, ConversationRow, RoomRow } from '../src/store/types';
 import { AgentMenu, AgentPrompts, type AgentPrompt } from '../src/ui/agent-actions';
 import { Banner } from '../src/ui/banner';
+import { Pill } from '../src/ui/controls';
 import { Face, useAsleep } from '../src/ui/face';
-import { Cards, Dots, Gear, Pencil, Plus, Server, Trash } from '../src/ui/icons';
-import { LINE, ListCard, ListRow } from '../src/ui/list';
+import { Cards, Dots, Gear, Pencil, Plug, Plus, Trash } from '../src/ui/icons';
+import { Badge, LINE, ListCard, ListRow } from '../src/ui/list';
 import { previewOf } from '../src/ui/plain';
+import { RoomListRow, RoomPrompts, type RoomPrompt } from '../src/ui/rooms';
 import { ConnectionBanner, PhaseDot, ThinkingDot, activityLabel } from '../src/ui/status';
 import { chatHref, profileHref } from '../src/ui/titles';
 import { DeleteTopic, Menu, RenameTopic, TitlePrompt } from '../src/ui/topics';
@@ -21,7 +23,10 @@ import { shortTime } from '../src/ui/time';
 type Overlay =
   | { kind: 'newTopic'; agent: Agent }
   | { kind: 'topic'; row: ConversationRow; prompt: 'menu' | 'rename' | 'delete' }
-  | { kind: 'agent'; agent: Agent; prompt: 'menu' | AgentPrompt };
+  | { kind: 'agent'; agent: Agent; prompt: 'menu' | AgentPrompt }
+  | { kind: 'room'; room: RoomRow; prompt: RoomPrompt };
+
+const PAGES = ['Agents', 'Rooms'] as const;
 
 // The face in an agent's large list style.
 const LARGE_FACE = 40;
@@ -51,6 +56,11 @@ export default function Conversations() {
   const items = useMemo(() => flatten(snapshot.agentGroups), [snapshot.agentGroups]);
   const canTopic = snapshot.capabilities?.topics === true;
   const canCreate = snapshot.capabilities?.createAgent === true;
+  const canRooms = snapshot.capabilities?.rooms === true;
+  const { width } = useWindowDimensions();
+  const pager = useRef<ScrollView>(null);
+  const [page, setPage] = useState(0);
+  const onRooms = canRooms && page === 1;
   // Stable callbacks, so a row whose data did not change keeps its render while another streams.
   const openChat = useCallback((conv: string) => router.push(chatHref(conv)), [router]);
   const openProfile = useCallback((agentId: string) => router.push(profileHref(agentId)), [router]);
@@ -61,18 +71,21 @@ export default function Conversations() {
     if (row.topic) setOverlay({ kind: 'topic', row, prompt: 'menu' });
     else if (row.agent) setOverlay({ kind: 'agent', agent: row.agent, prompt: 'menu' });
   }, []);
+  const manageRoom = useCallback((room: RoomRow) => setOverlay({ kind: 'room', room, prompt: 'menu' }), []);
   const close = () => setOverlay(null);
   if (conn.phase === 'unpaired' || !conn.pairing) return <Redirect href="/pair" />;
 
   const manageable = (row: ConversationRow): boolean => (row.topic ? canTopic : row.agent !== null);
 
   const bridgeButton = (
-    <Button size="$3" circular chromeless scaleIcon={1.3} aria-label="Switch bridge" icon={<Server />} onPress={() => router.push('/installs')} />
+    <Button size="$3" circular chromeless scaleIcon={1.3} aria-label="Switch bridge" icon={<Plug />} onPress={() => router.push('/installs')} />
   );
   const actions = (
     <XStack items="center">
       <Button size="$3" circular chromeless scaleIcon={1.3} aria-label="Elements" icon={<Cards />} onPress={() => router.push('/elements')} />
-      {canCreate ? (
+      {onRooms ? (
+        <Button size="$3" circular chromeless scaleIcon={1.3} aria-label="New room" icon={<Plus size={22} />} onPress={() => router.push('/create-room')} />
+      ) : canCreate ? (
         <Button size="$3" circular chromeless scaleIcon={1.3} aria-label="New agent" icon={<Plus size={22} />} onPress={() => router.push('/create-agent')} />
       ) : null}
       <Button size="$3" circular chromeless scaleIcon={1.3} aria-label="Settings" icon={<Gear />} onPress={() => router.push('/settings')} />
@@ -96,46 +109,66 @@ export default function Conversations() {
             {notice.message}
           </Banner>
         ))}
-        <FlatList
-          data={items}
-          keyExtractor={(item) => item.key}
-          contentContainerStyle={{ paddingVertical: 12 }}
-          ItemSeparatorComponent={() => <YStack height="$0.75" />}
-          ListHeaderComponent={
-            <H4 px="$4" pb="$2.5">
-              Agents
-            </H4>
-          }
-          ListEmptyComponent={<Empty phase={conn.phase} />}
-          renderItem={({ item }) =>
-            item.kind === 'group' ? (
-              <YStack mx="$3">
-                <ListCard>
-                  <AgentHeader
-                    group={item.group}
-                    look={snapshot.profiles[item.group.agent.id]}
-                    canTopic={canTopic}
-                    onNewTopic={newTopic}
-                    onManage={manageAgent}
-                    onProfile={openProfile}
-                  />
-                  {item.group.conversations.map((row) => (
-                    <Row key={row.id} row={row} grouped onOpen={openChat} onManage={manageable(row) ? manageRow : undefined} />
-                  ))}
-                </ListCard>
-              </YStack>
-            ) : (
-              <Row
-                row={item.row}
-                grouped={false}
-                look={snapshot.profiles[item.row.agentId]}
-                onOpen={openChat}
-                onManage={manageable(item.row) ? manageRow : undefined}
-                onProfile={openProfile}
-              />
-            )
-          }
-        />
+        <Pages enabled={canRooms} page={page} width={width} pager={pager} onPage={setPage}>
+          <FlatList
+            data={items}
+            keyExtractor={(item) => item.key}
+            contentContainerStyle={{ paddingVertical: 12 }}
+            ItemSeparatorComponent={() => <YStack height="$0.75" />}
+            ListHeaderComponent={
+              <H4 px="$4" pb="$2.5">
+                Agents
+              </H4>
+            }
+            ListEmptyComponent={<Empty phase={conn.phase} />}
+            renderItem={({ item }) =>
+              item.kind === 'group' ? (
+                <YStack mx="$3">
+                  <ListCard>
+                    <AgentHeader
+                      group={item.group}
+                      look={snapshot.profiles[item.group.agent.id]}
+                      canTopic={canTopic}
+                      onNewTopic={newTopic}
+                      onManage={manageAgent}
+                      onProfile={openProfile}
+                    />
+                    {item.group.conversations.map((row) => (
+                      <Row key={row.id} row={row} grouped onOpen={openChat} onManage={manageable(row) ? manageRow : undefined} />
+                    ))}
+                  </ListCard>
+                </YStack>
+              ) : (
+                <Row
+                  row={item.row}
+                  grouped={false}
+                  look={snapshot.profiles[item.row.agentId]}
+                  onOpen={openChat}
+                  onManage={manageable(item.row) ? manageRow : undefined}
+                  onProfile={openProfile}
+                />
+              )
+            }
+          />
+          {canRooms ? (
+            <FlatList
+              data={snapshot.rooms}
+              keyExtractor={(room) => room.id}
+              contentContainerStyle={{ paddingVertical: 12 }}
+              ItemSeparatorComponent={() => <YStack height="$0.75" />}
+              ListHeaderComponent={
+                <H4 px="$4" pb="$2.5">
+                  Rooms
+                </H4>
+              }
+              ListEmptyComponent={<RoomsEmpty onNew={() => router.push('/create-room')} />}
+              renderItem={({ item }) => <RoomListRow room={item} profiles={snapshot.profiles} onOpen={openChat} onManage={manageRoom} />}
+            />
+          ) : null}
+        </Pages>
+        {overlay?.kind === 'room' ? (
+          <RoomPrompts room={overlay.room} prompt={overlay.prompt} setPrompt={(next) => setOverlay({ ...overlay, prompt: next })} onClose={close} />
+        ) : null}
         {overlay?.kind === 'newTopic' ? (
           <TitlePrompt
             heading={`New topic for ${overlay.agent.name}`}
@@ -365,13 +398,60 @@ const Row = memo(function Row({
   );
 });
 
-function Badge({ count }: { count: number }) {
+// Without rooms the agents list is the whole screen, as before. Each page takes the pager's measured
+// size, so the lists inside have a height to scroll in.
+function Pages({
+  enabled,
+  page,
+  width,
+  pager,
+  onPage,
+  children,
+}: {
+  enabled: boolean;
+  page: number;
+  width: number;
+  pager: React.RefObject<ScrollView | null>;
+  onPage: (page: number) => void;
+  children: React.ReactNode;
+}) {
+  const [height, setHeight] = useState(0);
+  // A new width (a rotation) leaves the offset at the old page's x, so it moves to the same page.
+  useEffect(() => {
+    pager.current?.scrollTo({ x: page * width, animated: false });
+  }, [width]);
+  if (!enabled) return <>{children}</>;
+  const pages = Array.isArray(children) ? children.filter(Boolean) : [children];
   return (
-    <XStack theme="accent" bg="$color9" rounded="$10" px="$2" items="center">
-      <Text fontSize="$1" color="$color1" fontWeight="700">
-        {count}
-      </Text>
-    </XStack>
+    <ScrollView
+      ref={pager}
+      horizontal
+      pagingEnabled
+      style={{ flex: 1 }}
+      showsHorizontalScrollIndicator={false}
+      keyboardShouldPersistTaps="handled"
+      onLayout={(event) => setHeight(event.nativeEvent.layout.height)}
+      onMomentumScrollEnd={(event) => onPage(Math.round(event.nativeEvent.contentOffset.x / width))}
+    >
+      {pages.map((child, i) => (
+        <View key={PAGES[i] ?? i} style={{ width, height }}>
+          {child}
+        </View>
+      ))}
+    </ScrollView>
+  );
+}
+
+function RoomsEmpty({ onNew }: { onNew: () => void }) {
+  return (
+    <YStack px="$4" gap="$3" items="flex-start">
+      <Paragraph color="$color11">
+        Rooms put several agents in one chat. Name one with @ to give it work, and they hand tasks to each other the same way.
+      </Paragraph>
+      <Pill kind="primary" onPress={onNew}>
+        New room
+      </Pill>
+    </YStack>
   );
 }
 

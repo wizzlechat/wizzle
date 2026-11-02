@@ -4,13 +4,16 @@ import { Animated, Easing, View } from 'react-native';
 import { Button, Text, XStack, YStack, useTheme } from 'tamagui';
 import type { Agent } from '../protocol/index.ts';
 import { store } from '../store/index.ts';
-import type { ChatEntry } from '../store/types.ts';
+import type { AgentProfile, ChatEntry } from '../store/types.ts';
 import { ResumeButton } from './agent-actions.tsx';
 import { FileView } from './attachments.tsx';
 import { QuestionCard } from './cards.tsx';
 import { ElementLink } from './element.tsx';
+import { Face } from './face.tsx';
 import { Check, Copy, Speaker } from './icons.tsx';
-import { Markdown } from './markdown.tsx';
+import { Markdown, type MentionStyle } from './markdown.tsx';
+import { HandoffDivider, MentionText, handoffOf } from './room-chat.tsx';
+import type { Member } from './rooms.tsx';
 import { MessageMore } from './message-more.tsx';
 import { useMessageFont } from './text-size.ts';
 import { shortTime } from './time.ts';
@@ -20,6 +23,13 @@ const HOLD_MS = 150;
 // How long the copy button shows its check.
 const COPIED_MS = 1500;
 
+// In a room: its members for mentions, and every agent that may have spoken there, members that left included.
+export type EntryRoom = {
+  members: Member[];
+  people: Record<string, { name: string; color: string; look: AgentProfile | undefined }>;
+  mentions: MentionStyle;
+};
+
 // Your own messages sit on the right in a bubble with the time under it; the rest keep a name and time above.
 // Memoized: a streaming delta replaces one entry, and the rows around it keep their render.
 export const Entry = memo(function Entry({
@@ -28,16 +38,21 @@ export const Entry = memo(function Entry({
   nameColor,
   conv,
   agent,
+  room,
 }: {
   entry: ChatEntry;
   agentName: string;
   nameColor: string;
   conv: string;
   agent: Agent | null;
+  room?: EntryRoom;
 }) {
   const failure = entry.local?.failure;
   const mine = entry.role === 'user';
   const copyable = entry.role === 'agent' && entry.kind === 'text' && entry.text.length > 0;
+  const speaker = room && entry.role === 'agent' && entry.speaker !== undefined ? entry.speaker : undefined;
+  const person = speaker !== undefined ? room?.people[speaker] : undefined;
+  const handoff = speaker !== undefined && room && entry.kind === 'text' ? handoffOf(entry.text, speaker, room.members) : null;
   const [holding, setHolding] = useState(false);
   const holdTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(holdTimer.current), []);
@@ -77,23 +92,25 @@ export const Entry = memo(function Entry({
     >
       {mine ? (
         <YStack maxW="80%" px="$4" py="$3" rounded="$8" bg="$color4">
-          <Body entry={entry} />
+          <Body entry={entry} room={room} />
         </YStack>
       ) : (
         <>
           <XStack items="center" gap="$2">
+            {speaker !== undefined ? <Face seed={speaker} look={person?.look} size={16} /> : null}
             <Text
               fontSize="$1"
               fontWeight="700"
               color={entry.role === 'system' ? '$color11' : undefined}
-              style={entry.role === 'system' ? undefined : { color: nameColor }}
+              style={entry.role === 'system' ? undefined : { color: person?.color ?? nameColor }}
             >
-              {entry.role === 'system' ? 'system' : agentName}
+              {entry.role === 'system' ? 'system' : (person?.name ?? agentName)}
             </Text>
             {stamp}
           </XStack>
-          <Body entry={entry} />
+          <Body entry={entry} room={room} />
           {copyable ? <MessageActions text={entry.text} /> : null}
+          {handoff !== null && person ? <HandoffDivider from={person.name} to={handoff} /> : null}
         </>
       )}
       {mine ? (
@@ -198,7 +215,7 @@ function CopyMark({ copied, color }: { copied: boolean; color: string }) {
   );
 }
 
-function Body({ entry }: { entry: ChatEntry }) {
+function Body({ entry, room }: { entry: ChatEntry; room: EntryRoom | undefined }) {
   const font = useMessageFont();
   if (entry.kind === 'question' && entry.question) {
     return (
@@ -250,7 +267,8 @@ function Body({ entry }: { entry: ChatEntry }) {
       </YStack>
     );
   }
-  if (entry.format === 'markdown' && entry.role !== 'user') return <Markdown value={entry.text} />;
+  if (entry.format === 'markdown' && entry.role !== 'user') return <Markdown value={entry.text} {...(room && { mentions: room.mentions })} />;
+  if (room && entry.role !== 'system') return <MentionText text={entry.text} members={room.members} font={font} />;
   return <Text {...font}>{entry.text}</Text>;
 }
 

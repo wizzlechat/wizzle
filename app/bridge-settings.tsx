@@ -25,6 +25,7 @@ const FEATURES: Record<keyof Capabilities, string> = {
   abort: 'Abort',
   tasks: 'Tasks',
   keys: 'Keys',
+  rooms: 'Rooms',
 };
 const FEATURE_KEYS = Object.keys(FEATURES) as (keyof Capabilities)[];
 

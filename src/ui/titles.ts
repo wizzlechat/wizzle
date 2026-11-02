@@ -18,8 +18,10 @@ export function chatTitle(row: ConversationRow | undefined, conv: string): strin
 
 // The links carry the title, so the root layout can show it on the screen's first frame without the store.
 export function chatHref(conv: string): string {
-  const row = store.getSnapshot().conversations.find((one) => one.id === conv);
-  return `/chat/${encodeURIComponent(conv)}?title=${encodeURIComponent(chatTitle(row, conv))}`;
+  const snapshot = store.getSnapshot();
+  const room = snapshot.rooms.find((one) => one.id === conv);
+  const title = room ? room.title : chatTitle(snapshot.conversations.find((one) => one.id === conv), conv);
+  return `/chat/${encodeURIComponent(conv)}?title=${encodeURIComponent(title)}`;
 }
 
 export function profileHref(agentId: string): string {

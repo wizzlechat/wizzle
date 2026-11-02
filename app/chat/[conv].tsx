@@ -1,23 +1,25 @@
 import { Stack, useIsFocused, useLocalSearchParams, useRouter } from 'expo-router';
-import { forwardRef, useCallback, useEffect, useMemo, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FlatList, type ListRenderItem, type ScrollViewProps } from 'react-native';
 import { KeyboardChatScrollView, KeyboardGestureArea } from 'react-native-keyboard-controller';
 import { useSharedValue, type SharedValue } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Button, Spinner, Text, XStack, YStack } from 'tamagui';
+import { Button, Spinner, Text, XStack, YStack, useTheme } from 'tamagui';
 import { useConnection } from '../../src/relay/connection';
-import { MAX_ATTACHMENTS, SYSTEM_CONV, store, useCapabilities, useConversation, useProfile, useRow, useSelector } from '../../src/store';
-import type { ChatEntry } from '../../src/store/types';
-import { ResumeButton } from '../../src/ui/agent-actions';
+import { MAX_ATTACHMENTS, SYSTEM_CONV, store, useCapabilities, useConversation, useProfile, useRoom, useRow, useSelector } from '../../src/store';
+import type { AgentView, ChatEntry } from '../../src/store/types';
+import { AgentMenu, AgentPrompts, ResumeButton, type AgentPrompt } from '../../src/ui/agent-actions';
 import { Banner } from '../../src/ui/banner';
 import { ApprovalCard } from '../../src/ui/cards';
 import { AttachMenu, Composer, useComposer } from '../../src/ui/composer';
 import { useDeadline } from '../../src/ui/deadline';
-import { Entry } from '../../src/ui/entry';
+import { Entry, type EntryRoom } from '../../src/ui/entry';
 import { faceColor } from '../../src/ui/face';
 import { Dots } from '../../src/ui/icons';
 import { KeyboardRider } from '../../src/ui/keyboard';
 import { TopicPrompts, type Prompt } from '../../src/ui/prompts';
+import { AvatarStrip, ContinueRow, withMention, type RoomContext } from '../../src/ui/room-chat';
+import { RoomPrompts, mentionables, roomMembers, type RoomPrompt } from '../../src/ui/rooms';
 import { ConnectionBanner } from '../../src/ui/status';
 import { ThinkingRow } from '../../src/ui/thinking';
 import { chatHref, chatTitle, decodeId } from '../../src/ui/titles';
@@ -49,6 +51,28 @@ export default function Chat() {
   const [hushed, setHushed] = useState(false);
   const [composerHeight, setComposerHeight] = useState(0);
   const composer = useComposer(conv);
+  const theme = useTheme();
+  const room = useRoom(conv);
+  const agents = useSelector((snapshot) => snapshot.agents);
+  const profiles = useSelector((snapshot) => snapshot.profiles);
+  const [roomPrompt, setRoomPrompt] = useState<RoomPrompt | null>(null);
+  const [memberMenu, setMemberMenu] = useState<{ agent: AgentView; prompt: 'menu' | AgentPrompt } | null>(null);
+  // Once a room, always a room: a room missing from the catalog was deleted.
+  const wasRoom = useRef(false);
+  if (room) wasRoom.current = true;
+  const members = useMemo(() => (room ? roomMembers(room, profiles) : []), [room, profiles]);
+  const working = useMemo(() => new Set((room?.activities ?? []).flatMap((one) => (one.speaker ? [one.speaker] : []))), [room?.activities]);
+  const roomContext = useMemo<RoomContext | undefined>(() => (room ? { members, working } : undefined), [room, members, working]);
+  const blue = theme.blue10.val;
+  const ink = theme.color.val;
+  const entryRoom = useMemo<EntryRoom | undefined>(() => {
+    if (!room) return undefined;
+    const people: EntryRoom['people'] = {};
+    for (const agent of agents) people[agent.id] = { name: agent.name, color: faceColor(agent.id, profiles[agent.id]?.hue), look: profiles[agent.id] };
+    const named = mentionables(members);
+    const color = (id: string | null) => (id === null ? blue : (members.find((member) => member.id === id)?.color ?? ink));
+    return { members, people, mentions: { members: named, color } };
+  }, [room, agents, profiles, members, blue, ink]);
 
   const agentName = row?.agent?.name ?? row?.title ?? 'agent';
   const nameColor = faceColor(seed, look?.hue);
@@ -60,7 +84,7 @@ export default function Chat() {
   const paused = agent?.status === 'paused';
   const composing = !readOnly && !(paused && agent);
   // The catalog dropped this conversation, so it was deleted here or by another client.
-  const gone = listed && row === undefined && !readOnly;
+  const gone = wasRoom.current ? room === undefined : listed && row === undefined && !readOnly;
   const system = useConversation(SYSTEM_CONV);
   const waitingInSystem = readOnly ? 0 : system.approvals.filter((open) => open.decided === undefined).length;
   const silent = created !== null && !state.messages.some((entry) => entry.role === 'agent');
@@ -93,24 +117,33 @@ export default function Chat() {
       at: open.at,
       kind: 'question',
       question: open,
+      ...(open.question.speaker !== undefined && { speaker: open.question.speaker }),
     }));
     return [...state.messages, ...asked].sort((a, b) => a.at - b.at).reverse();
   }, [state.messages, state.questions, conv]);
   const renderItem: ListRenderItem<ChatEntry> = useCallback(
-    ({ item }) => <Entry entry={item} agentName={agentName} nameColor={nameColor} conv={conv} agent={agent} />,
-    [agentName, nameColor, conv, agent],
+    ({ item }) => <Entry entry={item} agentName={agentName} nameColor={nameColor} conv={conv} agent={agent} {...(entryRoom && { room: entryRoom })} />,
+    [agentName, nameColor, conv, agent, entryRoom],
   );
 
   const menuButton = (
-    <Button size="$3" circular chromeless scaleIcon={1.3} aria-label="Conversation menu" icon={<Dots />} onPress={() => setPrompt('menu')} />
+    <Button
+      size="$3"
+      circular
+      chromeless
+      scaleIcon={1.3}
+      aria-label={room ? 'Room menu' : 'Conversation menu'}
+      icon={<Dots />}
+      onPress={() => (room ? setRoomPrompt('menu') : setPrompt('menu'))}
+    />
   );
 
   return (
     <>
       <Stack.Screen
         options={{
-          title: chatTitle(row, conv),
-          ...(row && !readOnly && {
+          title: room ? room.title : chatTitle(row, conv),
+          ...((row || room) && !readOnly && {
             headerRight: () => menuButton,
           }),
         }}
@@ -118,6 +151,16 @@ export default function Chat() {
       {/* A drag down the list starts taking the keyboard once the finger reaches the input bar. */}
       <KeyboardGestureArea style={{ flex: 1 }} textInputNativeID={composerId} offset={composerHeight}>
         <YStack flex={1}>
+          {roomContext ? (
+            <AvatarStrip
+              context={roomContext}
+              onTap={(member) => composer.setDraft((draft) => withMention(draft, member.handle))}
+              onHold={(member) => {
+                const view = agents.find((one) => one.id === member.id);
+                if (view) setMemberMenu({ agent: view, prompt: 'menu' });
+              }}
+            />
+          ) : null}
           <ConnectionBanner phase={conn.phase} error={conn.error} />
           {state.notices.map((notice) => (
             <Banner key={notice.id} danger action="Dismiss" onAction={() => store.dismiss(notice.id, conv)}>
@@ -159,7 +202,20 @@ export default function Chat() {
             {state.approvals.map((open) => (
               <ApprovalCard key={open.approval.approvalId} open={open} conv={conv} />
             ))}
-            <ThinkingRow activity={state.activity} seed={seed} look={look} />
+            {room && room.held.length > 0 ? <ContinueRow held={room.held} members={members} onContinue={() => store.continueRoom(conv)} /> : null}
+            {/* One row per member, so each rises and drops on its own. */}
+            {room ? (
+              members.map((member) => (
+                <ThinkingRow
+                  key={member.id}
+                  activity={room.activities.find((one) => one.speaker === member.id) ?? null}
+                  seed={member.id}
+                  look={member.look}
+                />
+              ))
+            ) : (
+              <ThinkingRow activity={state.activity} seed={seed} look={look} />
+            )}
             {readOnly ? (
               <XStack px="$4" py="$3" bg="$background" borderTopWidth={1} borderColor="$borderColor">
                 <Text fontSize="$2" color="$color11">
@@ -174,13 +230,36 @@ export default function Chat() {
                 {capabilities?.lifecycle ? <ResumeButton agent={agent} /> : null}
               </XStack>
             ) : (
-              <Composer composer={composer} canAttach={canAttach} nativeID={composerId} onAttach={() => setPrompt('attach')} onLayout={setComposerHeight} />
+              <Composer
+                composer={composer}
+                canAttach={canAttach}
+                nativeID={composerId}
+                onAttach={() => setPrompt('attach')}
+                onLayout={setComposerHeight}
+                {...(roomContext && { room: roomContext })}
+              />
             )}
             {/* Sits behind the keyboard once it is up; at rest the list shows through it only under the input bar. */}
             <YStack height={insets.bottom} bg={composing ? undefined : '$background'} />
           </KeyboardRider>
           {row && prompt && prompt !== 'attach' ? (
             <TopicPrompts row={row} look={look} prompt={prompt} setPrompt={setPrompt} canTopic={canTopic} canClear={canClear} capabilities={capabilities} />
+          ) : null}
+          {room && roomPrompt ? <RoomPrompts room={room} prompt={roomPrompt} setPrompt={setRoomPrompt} onClose={() => setRoomPrompt(null)} /> : null}
+          {memberMenu ? (
+            memberMenu.prompt === 'menu' ? (
+              <AgentMenu
+                title={memberMenu.agent.name}
+                seed={memberMenu.agent.id}
+                agent={memberMenu.agent}
+                look={profiles[memberMenu.agent.id]}
+                capabilities={capabilities}
+                onPick={(next) => setMemberMenu({ agent: memberMenu.agent, prompt: next })}
+                onClose={() => setMemberMenu(null)}
+              />
+            ) : (
+              <AgentPrompts agent={memberMenu.agent} prompt={memberMenu.prompt} onClose={() => setMemberMenu(null)} />
+            )
           ) : null}
           {prompt === 'attach' ? (
             <AttachMenu

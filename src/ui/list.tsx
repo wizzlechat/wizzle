@@ -18,6 +18,17 @@ export function ListCard({ title, children }: { title?: string; children: React.
   );
 }
 
+// A count on a list row: unread messages or open questions.
+export function Badge({ count }: { count: number }) {
+  return (
+    <XStack theme="accent" bg="$color9" rounded="$10" px="$2" items="center">
+      <Text fontSize="$1" color="$color1" fontWeight="700">
+        {count}
+      </Text>
+    </XStack>
+  );
+}
+
 export function SectionTitle({ children }: { children: string }) {
   return (
     <Text px="$4" fontSize="$2" color="$color10">

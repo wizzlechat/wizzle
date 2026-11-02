@@ -1,10 +1,11 @@
-import type { Agent, Conversation } from '../protocol/index.ts';
+import type { Agent, Conversation, Room } from '../protocol/index.ts';
 import type { AgentProfile, BridgeHello, ChatEntry, OpenApproval, OpenQuestion, StoredElement } from './types.ts';
 
 // Messages kept per conversation, newest first to go.
 export const CACHE_MESSAGES = 2000;
 
-export type CachedMeta = { hello: BridgeHello | null; agents: Agent[]; catalog: Conversation[] };
+// rooms is missing from what a build before rooms wrote.
+export type CachedMeta = { hello: BridgeHello | null; agents: Agent[]; catalog: Conversation[]; rooms?: Room[] };
 
 export type CachedConversation = { messages: ChatEntry[]; questions: OpenQuestion[]; approvals: OpenApproval[] };
 

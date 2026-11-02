@@ -1,5 +1,5 @@
 import { openDatabaseSync, type SQLiteDatabase } from 'expo-sqlite';
-import type { Agent, Conversation } from '../protocol/index.ts';
+import type { Agent, Conversation, Room } from '../protocol/index.ts';
 import { trimMessages, type CachedConversation, type CachedMeta, type CachedPairing, type ReadMarks, type StoreCache } from './cache.ts';
 import type { AgentProfile, BridgeHello, ChatEntry, OpenApproval, OpenQuestion, StoredElement } from './types.ts';
 
@@ -64,6 +64,7 @@ export class SqliteCache implements StoreCache {
         if (row.key === 'hello') meta.hello = (parseJson(row.value) as BridgeHello | null) ?? null;
         else if (row.key === 'agents') meta.agents = list<Agent>(row.value);
         else if (row.key === 'catalog') meta.catalog = list<Conversation>(row.value);
+        else if (row.key === 'rooms') meta.rooms = list<Room>(row.value);
         else if (row.key === 'elements') elements = list<StoredElement>(row.value);
         else if (row.key === 'read') read = (parseJson(row.value) as ReadMarks | null) ?? null;
         else if (row.key === 'profiles') profiles = (parseJson(row.value) as Record<string, unknown> | null) ?? {};
@@ -88,6 +89,7 @@ export class SqliteCache implements StoreCache {
     this.queueMeta(pairingId, 'hello', meta.hello);
     this.queueMeta(pairingId, 'agents', meta.agents);
     this.queueMeta(pairingId, 'catalog', meta.catalog);
+    this.queueMeta(pairingId, 'rooms', meta.rooms ?? []);
   }
 
   saveElements(pairingId: string, elements: StoredElement[]): void {

@@ -6,7 +6,7 @@ import { useConnection } from '../src/relay/connection';
 import { useStore } from '../src/store';
 import { APPEARANCES, useAppearance } from '../src/ui/appearance';
 import { Face } from '../src/ui/face';
-import { Bell, Contrast, Key, Letters, Plus, Server } from '../src/ui/icons';
+import { Bell, Contrast, Key, Letters, Plug, Plus } from '../src/ui/icons';
 import { ListRow, ListSection } from '../src/ui/list';
 import { setAnimations, useAnimations } from '../src/ui/motion';
 import { setSleeping, useSleeping } from '../src/ui/sleeping';
@@ -53,6 +53,9 @@ export default function Settings() {
                 onPress={() => void enableNotifications(notifications)}
               />
             ) : null}
+          </ListSection>
+
+          <ListSection title="Agents">
             <ListRow
               leading={<Face seed="motion" size={22} />}
               label="Face animations"
@@ -69,7 +72,7 @@ export default function Settings() {
 
           <ListSection title="Bridge">
             {conn.pairing ? (
-              <ListRow icon={Server} label="Bridge settings" chevron onPress={() => router.push('/bridge-settings')} />
+              <ListRow icon={Plug} label="Bridge settings" chevron onPress={() => router.push('/bridge-settings')} />
             ) : (
               <ListRow icon={Plus} label="Pair a bridge" chevron onPress={() => router.push('/pair')} />
             )}

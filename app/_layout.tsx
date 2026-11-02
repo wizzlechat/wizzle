@@ -85,6 +85,7 @@ function RootStack({ scheme }: { scheme: 'light' | 'dark' }) {
         <Stack.Screen name="element" options={{ presentation: 'modal' }} />
         <Stack.Screen name="profile" options={({ route }) => ({ presentation: 'modal', title: paramTitle(route.params) })} />
         <Stack.Screen name="chat/[conv]" options={({ route }) => ({ title: paramTitle(route.params) })} />
+        <Stack.Screen name="tasks" options={({ route }) => ({ title: paramTitle(route.params) })} />
       </Stack>
     </ThemeProvider>
   );
