@@ -3,8 +3,9 @@ import { useState } from 'react';
 import { Button, H4, Input, Paragraph, ScrollView, Text, XStack, YStack } from 'tamagui';
 import type { Capabilities } from '../src/protocol/index';
 import { connection, useConnection } from '../src/relay/connection';
-import { useStore } from '../src/store';
-import { Close, Plus, Swap, Trash } from '../src/ui/icons';
+import { store, useStore } from '../src/store';
+import type { SendFailure } from '../src/store/types';
+import { Close, Plus, Restart, Swap, Trash } from '../src/ui/icons';
 import { ListRow, ListSection } from '../src/ui/list';
 import { PHASE, StatusDot } from '../src/ui/status';
 import { shortTime } from '../src/ui/time';
@@ -26,6 +27,7 @@ const FEATURES: Record<keyof Capabilities, string> = {
   tasks: 'Tasks',
   keys: 'Keys',
   rooms: 'Rooms',
+  updateBridge: 'Update from the app',
 };
 const FEATURE_KEYS = Object.keys(FEATURES) as (keyof Capabilities)[];
 
@@ -36,13 +38,21 @@ export default function BridgeSettings() {
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState('');
+  const [updateError, setUpdateError] = useState<string | null>(null);
   if (!conn.pairing) return <Redirect href="/pair" />;
   const status = PHASE[conn.phase];
   const bridge = snapshot.hello;
+  const update = snapshot.bridgeUpdate;
+  const newer = bridge && update.latest !== null && update.latest !== bridge.bridgeVersion ? update.latest : null;
 
   function saveName(): void {
     connection.rename(draft);
     setRenaming(false);
+  }
+
+  function startUpdate(): void {
+    setUpdateError(null);
+    store.updateBridge().catch((failure: SendFailure) => setUpdateError(failure.message));
   }
 
   return (
@@ -100,6 +110,23 @@ export default function BridgeSettings() {
             {bridge ? <ListRow label="Bridge" value={bridge.bridgeVersion} /> : null}
             <ListRow label="Paired" value={shortTime(conn.pairing.pairedAt)} />
           </ListSection>
+
+          {newer ? (
+            <ListSection title="Update">
+              {update.updating ? (
+                <ListRow label={`Updating to ${newer}, the bridge restarts`} busy />
+              ) : snapshot.capabilities?.updateBridge ? (
+                <ListRow icon={Restart} label={`Update to ${newer}`} onPress={startUpdate} />
+              ) : (
+                <ListRow label={`${newer} is out; rerun the install on the host`} />
+              )}
+              {updateError ?? update.error ? (
+                <Paragraph color="$red10" px="$4" pb="$3">
+                  {updateError ?? update.error}
+                </Paragraph>
+              ) : null}
+            </ListSection>
+          ) : null}
 
           <ListSection title="What this bridge supports">
             {snapshot.capabilities ? (

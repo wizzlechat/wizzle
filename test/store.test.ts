@@ -135,11 +135,12 @@ const CAPABILITIES: Capabilities = {
   deleteAgent: true,
   keys: true,
   rooms: true,
+  updateBridge: true,
 };
 
 type Wired = { store: WizzleStore; bridge: FakeBridge; relay: FakeRelay; client: RelayClient; stop(): void };
 
-type Fakes = { cache?: FakeCache; files?: FakeFiles };
+type Fakes = { cache?: FakeCache; files?: FakeFiles; latest?: (runtime: string) => Promise<string | null> };
 
 // The store over a real RelayClient, so every test drives it with packets FakeBridge actually sealed.
 async function wired(fakes: Fakes = {}): Promise<Wired> {
@@ -197,7 +198,7 @@ function catalog(bridge: FakeBridge): void {
     runtime: 'nanoclaw',
     runtimeVersion: '2.1.0',
     bridgeVersion: '0.1.0',
-    host: 'pi',
+    host: '3f9c0d2e',
     capabilities: CAPABILITIES,
   });
   bridge.send({ t: 'agents', agents: [{ id: 'agent-1', name: 'main', status: 'idle' }, { id: 'system', name: 'System', status: 'idle' }] });
@@ -406,7 +407,7 @@ test('history is not requested when the bridge says it has none', async () => {
     protocol: 1,
     runtime: 'openclaw',
     bridgeVersion: '0.1.0',
-    host: 'pi',
+    host: '3f9c0d2e',
     capabilities: { ...CAPABILITIES, history: false },
   });
   await until(() => w.store.getSnapshot().capabilities?.history === false);
@@ -1063,7 +1064,7 @@ function cachedEntry(msgId: string, at: number, text: string, extra: Partial<Cha
 
 function cachedCatalog(cache: FakeCache): void {
   cache.saveMeta(PAIRING, {
-    hello: { t: 'hello', protocol: 1, runtime: 'nanoclaw', bridgeVersion: '0.1.0', host: 'pi', capabilities: CAPABILITIES },
+    hello: { t: 'hello', protocol: 1, runtime: 'nanoclaw', bridgeVersion: '0.1.0', host: '3f9c0d2e', capabilities: CAPABILITIES },
     agents: [{ id: 'agent-1', name: 'main', status: 'idle' }],
     catalog: [{ id: CONV, agentId: 'agent-1', title: 'main', lastAt: 1000 }],
   });
@@ -1798,7 +1799,7 @@ test('room activity is one row per speaker, idle removes only that speaker, and 
   w.bridge.send({ t: 'activity', activity: { conv: ROOM, state: 'idle', speaker: 'agent-1' } });
   await until(() => w.store.peek(ROOM).activities.length === 1);
   assert.equal(w.store.getSnapshot().rooms[0]?.activities[0]?.speaker, 'agent-2');
-  w.bridge.send({ t: 'hello', protocol: 1, runtime: 'nanoclaw', bridgeVersion: '0.1.0', host: 'pi', capabilities: CAPABILITIES });
+  w.bridge.send({ t: 'hello', protocol: 1, runtime: 'nanoclaw', bridgeVersion: '0.1.0', host: '3f9c0d2e', capabilities: CAPABILITIES });
   await until(() => w.store.peek(ROOM).activities.length === 0);
   w.stop();
 });
@@ -1845,5 +1846,40 @@ test('a room send goes out like any other, and clearing a room wipes its transcr
   assert.equal(await cleared, ROOM);
   assert.equal(w.store.peek(ROOM).messages.length, 0);
   assert.deepEqual(w.store.peek(ROOM).held, []);
+  w.stop();
+});
+
+test('a newer published bridge is offered, and update_bridge follows the bridge through started and failed', async () => {
+  const asked: string[] = [];
+  const w = await wired({
+    latest: async (runtime) => {
+      asked.push(runtime);
+      return '0.2.0';
+    },
+  });
+  catalog(w.bridge);
+  await until(() => w.store.getSnapshot().bridgeUpdate.latest === '0.2.0');
+  assert.deepEqual(asked, ['nanoclaw']);
+
+  const started = w.store.updateBridge();
+  const request = await w.bridge.nextOf('update_bridge');
+  w.bridge.send({ t: 'bridge_update', ref: request.header.id, status: 'started' });
+  assert.equal(await started, 'started');
+  assert.equal(w.store.getSnapshot().bridgeUpdate.updating, true);
+
+  w.bridge.send({ t: 'bridge_update', status: 'failed', message: 'Wizzle update failed: the build fails.' });
+  await until(() => !w.store.getSnapshot().bridgeUpdate.updating);
+  assert.equal(w.store.getSnapshot().bridgeUpdate.error, 'Wizzle update failed: the build fails.');
+
+  const refused = failureOf(w.store.updateBridge());
+  const again = await w.bridge.nextOf('update_bridge');
+  w.bridge.send({ t: 'error', ref: again.header.id, code: 'busy', message: 'A bridge update is already running' });
+  assert.equal((await refused)?.code, 'busy');
+
+  // The next hello is a restarted bridge: the site is asked again and the old outcome goes.
+  catalog(w.bridge);
+  await until(() => asked.length === 2);
+  assert.equal(w.store.getSnapshot().bridgeUpdate.error, null);
+  assert.equal(w.store.getSnapshot().bridgeUpdate.updating, false);
   w.stop();
 });

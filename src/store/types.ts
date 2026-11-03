@@ -60,6 +60,8 @@ export type ChatEntry = {
 };
 
 export type Notice = { id: string; code: string; message: string };
+// The newest published bridge (null until the site answered), the update wizzle asked for, and how it ended.
+export type BridgeUpdate = { latest: string | null; updating: boolean; error: string | null };
 
 // `at` is when the question reached wizzle, which is where its row sits in the chat.
 export type OpenQuestion = { question: Question; at: number; answered?: string | string[] };
@@ -133,6 +135,7 @@ export type AgentGroup = { agent: AgentView; conversations: ConversationRow[] };
 export type StoreSnapshot = {
   hello: BridgeHello | null;
   capabilities: Capabilities | null;
+  bridgeUpdate: BridgeUpdate;
   agents: AgentView[];
   profiles: Record<string, AgentProfile>;
   conversations: ConversationRow[];

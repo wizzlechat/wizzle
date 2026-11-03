@@ -71,6 +71,7 @@ const CAPABILITY_FLAGS: Record<keyof Capabilities, true> = {
   deleteAgent: true,
   keys: true,
   rooms: true,
+  updateBridge: true,
 };
 
 export const CAPABILITY_KEYS = Object.keys(CAPABILITY_FLAGS) as (keyof Capabilities)[];

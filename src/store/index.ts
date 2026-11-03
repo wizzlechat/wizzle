@@ -11,12 +11,23 @@ import type { AgentProfile, ConversationRow, ConversationState, ElementRef, Room
 // Before the cache opens: the cache and saved files stay out of backups and locked with the phone.
 protectStorage();
 
+const DIST_URL = 'https://wizzle.app/dist';
+
+// The newest published bridge for a runtime: one version number in a text file on the site.
+async function latestBridge(runtime: string): Promise<string | null> {
+  const response = await fetch(`${DIST_URL}/${encodeURIComponent(runtime)}/latest`);
+  if (!response.ok) return null;
+  const text = (await response.text()).trim();
+  return /^\d+\.\d+\.\d+$/.test(text) ? text : null;
+}
+
 export const store = new WizzleStore({
   link: connection,
   newId,
   cache: new SqliteCache(),
   files: deviceFiles,
   pairing: () => connection.getSnapshot().pairing?.pairingId ?? null,
+  latest: latestBridge,
 });
 
 // A different pairing invalidates everything the previous bridge sent; a removed one takes its cache with it.

@@ -47,6 +47,7 @@ import type {
   AgentView,
   Attachment,
   BridgeHello,
+  BridgeUpdate,
   ChatEntry,
   ConversationRow,
   ConversationState,
@@ -84,6 +85,8 @@ export type StoreOptions = {
   cache?: StoreCache;
   files?: FileStore;
   pairing?: () => string | null;
+  // The newest published bridge for a runtime; without it the store never offers an update.
+  latest?: (runtime: string) => Promise<string | null>;
 };
 
 // What the create screen collects. Only one of template and copyFrom is ever set.
@@ -107,6 +110,7 @@ type PendingRequest = Settle &
     | { kind: 'runTask' | 'pauseTask' | 'resumeTask'; taskId: string }
     | { kind: 'createRoom' }
     | { kind: 'updateRoom' | 'deleteRoom'; conv: string }
+    | { kind: 'updateBridge' }
   );
 
 // What a row was built from; the row is reused while all four are the same objects and number.
@@ -199,6 +203,7 @@ export class WizzleStore {
   private readonly newId: () => string;
   private readonly now: () => number;
   private readonly pairingOf: (() => string | null) | null;
+  private readonly latestOf: ((runtime: string) => Promise<string | null>) | null;
   private loaded = false;
   private readonly convs = new Map<string, ConversationState>();
   private readonly sent = new Map<string, PendingSend>();
@@ -219,6 +224,7 @@ export class WizzleStore {
   private tasksError: SendFailure | null = null;
   private create: CreateState | null = null;
   private hello: BridgeHello | null = null;
+  private bridgeUpdate: BridgeUpdate = { latest: null, updating: false, error: null };
   private notices: Notice[] = [];
   private snapshot: StoreSnapshot | null = null;
   private readonly detach: () => void;
@@ -250,6 +256,7 @@ export class WizzleStore {
     this.cache = opts.cache ?? null;
     this.files = opts.files ?? null;
     this.pairingOf = opts.pairing ?? null;
+    this.latestOf = opts.latest ?? null;
     this.detach = opts.link.onPacket((packet) => this.receive(packet));
   }
 
@@ -495,6 +502,24 @@ export class WizzleStore {
     return this.ask({ t: 'delete_agent', agentId, removeWorkspace }, (settle) => ({ kind: 'deleteAgent', agentId, ...settle }));
   }
 
+  // Resolves with 'started' once the host runs the install script; the bridge then restarts and says hello again.
+  updateBridge(): Promise<string> {
+    return this.ask({ t: 'update_bridge' }, (settle) => ({ kind: 'updateBridge', ...settle }));
+  }
+
+  // Asks the site once per hello; the answer only counts while that hello still stands.
+  private checkLatest(hello: BridgeHello): void {
+    if (!this.latestOf) return;
+    this.latestOf(hello.runtime).then(
+      (latest) => {
+        if (this.hello !== hello || latest === null) return;
+        this.bridgeUpdate = { ...this.bridgeUpdate, latest };
+        this.changed();
+      },
+      () => undefined,
+    );
+  }
+
   // Once per connection, and again with force: the library may have been out of reach the first time.
   loadTemplates(force = false): void {
     this.load();
@@ -670,6 +695,7 @@ export class WizzleStore {
     this.newestSecret = null;
     this.create = null;
     this.hello = null;
+    this.bridgeUpdate = { latest: null, updating: false, error: null };
     this.notices = [];
     this.changed();
   }
@@ -900,6 +926,8 @@ export class WizzleStore {
     switch (h.t) {
       case 'hello': {
         this.hello = toHello(h);
+        this.bridgeUpdate = { latest: null, updating: false, error: null };
+        this.checkLatest(this.hello);
         // A new connection starts with nothing running; the sync reply that follows reports what still is.
         for (const [id, state] of this.convs) {
           if (state.activity || state.activities.length > 0) this.convs.set(id, { ...state, activity: null, activities: [] });
@@ -1312,6 +1340,19 @@ export class WizzleStore {
         this.changed();
         return;
       }
+      case 'bridge_update': {
+        const status = str(h['status']);
+        const ref = str(h['ref']);
+        const pending = ref ? this.requests.get(ref) : undefined;
+        if (ref && pending?.kind === 'updateBridge') {
+          this.requests.delete(ref);
+          pending.resolve(status ?? '');
+        }
+        if (status === 'started') this.bridgeUpdate = { ...this.bridgeUpdate, updating: true, error: null };
+        else if (status === 'failed') this.bridgeUpdate = { ...this.bridgeUpdate, updating: false, error: str(h['message']) ?? 'The bridge update failed.' };
+        this.changed();
+        return;
+      }
       case 'error': {
         const code = str(h['code']) ?? 'error';
         const message = str(h['message']) ?? 'The bridge rejected that.';
@@ -1533,6 +1574,7 @@ export class WizzleStore {
     return {
       hello: this.hello,
       capabilities: this.hello?.capabilities ?? null,
+      bridgeUpdate: this.bridgeUpdate,
       agents,
       profiles: this.profileView,
       conversations,
