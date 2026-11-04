@@ -1,5 +1,7 @@
 # wizzle
 
+<img src="assets/header-dark.svg" alt="Wizzle characters">
+
 The Wizzle app, built with Expo and React Native. It pairs with the Wizzle
 bridge on a NanoClaw or OpenClaw install and lets you chat with your agents
 from your phone.
@@ -26,7 +28,7 @@ leaves it.
 
 3. **Run this on your NanoClaw or OpenClaw machine**, on macOS or Linux:
 
-   ```
+   ```bash
    curl -fsSL https://wizzle.app/install.sh | bash
    ```
 
@@ -51,6 +53,6 @@ leaves it.
 - **Read it first** if you like: [wizzle.app/install.sh](https://wizzle.app/install.sh).
 - **Removing it** takes the same script:
 
-  ```
+  ```bash
   curl -fsSL https://wizzle.app/install.sh | bash -s -- --uninstall
   ```
