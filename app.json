@@ -2,7 +2,7 @@
   "expo": {
     "name": "wizzle",
     "slug": "wizzle",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "scheme": "wizzle",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -10,7 +10,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.wizzleai.ios",
-      "buildNumber": "1.0.14",
+      "buildNumber": "6",
       "appleTeamId": "L96WZ5P5WD",
       "config": {
         "usesNonExemptEncryption": false
