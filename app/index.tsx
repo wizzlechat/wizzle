@@ -10,7 +10,7 @@ import { AgentMenu, AgentPrompts, type AgentPrompt } from '../src/ui/agent-actio
 import { Banner } from '../src/ui/banner';
 import { Pill } from '../src/ui/controls';
 import { Face, useAsleep } from '../src/ui/face';
-import { Cards, Dots, Gear, Pencil, Plug, Plus, Trash } from '../src/ui/icons';
+import { Cards, Check, Dots, Gear, Pencil, Plug, Plus, Trash } from '../src/ui/icons';
 import { Badge, LINE, ListCard, ListRow } from '../src/ui/list';
 import { previewOf } from '../src/ui/plain';
 import { RoomListRow, RoomPrompts, type RoomPrompt } from '../src/ui/rooms';
@@ -23,7 +23,7 @@ import { shortTime } from '../src/ui/time';
 type Overlay =
   | { kind: 'newTopic'; agent: Agent }
   | { kind: 'topic'; row: ConversationRow; prompt: 'menu' | 'rename' | 'delete' }
-  | { kind: 'agent'; agent: Agent; prompt: 'menu' | AgentPrompt }
+  | { kind: 'agent'; agent: Agent; prompt: 'menu' | AgentPrompt; conv?: string }
   | { kind: 'room'; room: RoomRow; prompt: RoomPrompt };
 
 const PAGES = ['Agents', 'Rooms'] as const;
@@ -69,7 +69,7 @@ export default function Conversations() {
   // A topic's long press is about that topic; a default conversation's is about its agent.
   const manageRow = useCallback((row: ConversationRow) => {
     if (row.topic) setOverlay({ kind: 'topic', row, prompt: 'menu' });
-    else if (row.agent) setOverlay({ kind: 'agent', agent: row.agent, prompt: 'menu' });
+    else if (row.agent) setOverlay({ kind: 'agent', agent: row.agent, prompt: 'menu', conv: row.id });
   }, []);
   const manageRoom = useCallback((room: RoomRow) => setOverlay({ kind: 'room', room, prompt: 'menu' }), []);
   const close = () => setOverlay(null);
@@ -185,6 +185,14 @@ export default function Conversations() {
         {overlay?.kind === 'topic' ? (
           overlay.prompt === 'menu' ? (
             <Menu title={overlay.row.title} onClose={close}>
+              <ListRow
+                icon={Check}
+                label="Mark as read"
+                onPress={() => {
+                  store.markRead(overlay.row.id);
+                  close();
+                }}
+              />
               <ListRow icon={Pencil} label="Rename topic" onPress={() => setOverlay({ ...overlay, prompt: 'rename' })} />
               <ListRow icon={Trash} label="Delete topic" danger onPress={() => setOverlay({ ...overlay, prompt: 'delete' })} />
             </Menu>
@@ -204,7 +212,18 @@ export default function Conversations() {
               capabilities={snapshot.capabilities}
               onPick={(next) => setOverlay({ ...overlay, prompt: next })}
               onClose={close}
-            />
+            >
+              {overlay.conv !== undefined ? (
+                <ListRow
+                  icon={Check}
+                  label="Mark as read"
+                  onPress={() => {
+                    if (overlay.conv !== undefined) store.markRead(overlay.conv);
+                    close();
+                  }}
+                />
+              ) : null}
+            </AgentMenu>
           ) : (
             <AgentPrompts agent={overlay.agent} prompt={overlay.prompt} onClose={close} />
           )
