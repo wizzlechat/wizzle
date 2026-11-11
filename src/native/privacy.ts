@@ -4,6 +4,8 @@ import { Platform } from 'react-native';
 type PrivacyModule = {
   protectFolders(names: string[]): Promise<void>;
   onDeviceSpeechLocale(lang: string): string | null;
+  speak(text: string): Promise<void>;
+  stopSpeaking(): Promise<void>;
 };
 
 // The app's own module in modules/wizzle-privacy; iOS only, so elsewhere it is null.
@@ -23,4 +25,16 @@ export function protectStorage(): void {
 // The locale to dictate in when the phone recognizes it itself; null when audio would leave the device.
 export function onDeviceSpeechLocale(lang: string): string | null {
   return native?.onDeviceSpeechLocale(lang) ?? null;
+}
+
+// False off iOS, and on a build from before the module could speak.
+export const canReadAloud = typeof native?.speak === 'function';
+
+// Resolves when the text has been read, is stopped, or the next text starts.
+export function readAloud(text: string): Promise<void> {
+  return native ? native.speak(text) : Promise.resolve();
+}
+
+export function stopReadingAloud(): Promise<void> {
+  return native ? native.stopSpeaking() : Promise.resolve();
 }

@@ -10,11 +10,12 @@ import { FileView } from './attachments.tsx';
 import { QuestionCard } from './cards.tsx';
 import { ElementLink } from './element.tsx';
 import { Face } from './face.tsx';
-import { Check, Copy, Speaker } from './icons.tsx';
+import { Check, Copy, Speaker, Stop } from './icons.tsx';
 import { Markdown, type MentionStyle } from './markdown.tsx';
 import { HandoffDivider, MentionText, handoffOf } from './room-chat.tsx';
 import type { Member } from './rooms.tsx';
 import { MessageMore } from './message-more.tsx';
+import { canReadAloud, toggleReadAloud, useReadingAloud } from './read-aloud.ts';
 import { useMessageFont } from './text-size.ts';
 import { shortTime } from './time.ts';
 
@@ -109,7 +110,7 @@ export const Entry = memo(function Entry({
             {stamp}
           </XStack>
           <Body entry={entry} room={room} />
-          {copyable ? <MessageActions text={entry.text} /> : null}
+          {copyable ? <MessageActions text={entry.text} readKey={`${entry.conv}:${entry.msgId}`} /> : null}
           {handoff !== null && person ? <HandoffDivider from={person.name} to={handoff} /> : null}
         </>
       )}
@@ -152,8 +153,8 @@ export const Entry = memo(function Entry({
   );
 });
 
-// Copy takes the message as the agent wrote it, markdown included; the speaker waits for read aloud.
-function MessageActions({ text }: { text: string }) {
+// Copy takes the message as the agent wrote it, markdown included; the speaker reads it aloud on iOS.
+function MessageActions({ text, readKey }: { text: string; readKey: string }) {
   const theme = useTheme();
   const ink = theme.color10.val;
   const [copied, setCopied] = useState(false);
@@ -176,10 +177,24 @@ function MessageActions({ text }: { text: string }) {
       >
         <CopyMark copied={copied} color={ink} />
       </XStack>
-      <XStack aria-label="Read aloud" hitSlop={8}>
-        <Speaker size={18} color={ink} />
-      </XStack>
+      {canReadAloud ? <ReadAloud text={text} readKey={readKey} color={ink} /> : null}
       <MessageMore text={text} color={ink} />
+    </XStack>
+  );
+}
+
+// The speaker turns into a stop button while its message is being read.
+function ReadAloud({ text, readKey, color }: { text: string; readKey: string; color: string }) {
+  const reading = useReadingAloud(readKey);
+  return (
+    <XStack
+      role="button"
+      aria-label={reading ? 'Stop reading' : 'Read aloud'}
+      hitSlop={8}
+      pressStyle={{ opacity: 0.5 }}
+      onPress={() => toggleReadAloud(readKey, text)}
+    >
+      {reading ? <Stop size={18} color={color} /> : <Speaker size={18} color={color} />}
     </XStack>
   );
 }
